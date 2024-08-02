@@ -183,15 +183,13 @@ static int ct_parseopts(int argc, char *const *argv) {
     const char *config_str;
 
     optind = 0;
-    while ((c = getopt_long(argc, argv, "A:b:c:hp:qu:v", long_opts, NULL)) !=
-           -1) {
+    while ((c = getopt_long(argc, argv, "A:b:c:hp:qu:v", long_opts, NULL)) != -1) {
         switch (c) {
         case 'A':
             if ((ct_opt.o_archive_cnt >= LL_HSM_ORIGIN_MAX_ARCHIVE) ||
                 (atoi(optarg) >= LL_HSM_ORIGIN_MAX_ARCHIVE)) {
                 rc = -E2BIG;
-                tlog_error("archive number must be less than %zu",
-                         LL_HSM_ORIGIN_MAX_ARCHIVE);
+                tlog_error("archive number must be less than %zu", LL_HSM_ORIGIN_MAX_ARCHIVE);
                 return rc;
             }
             ct_opt.o_archive_id[ct_opt.o_archive_cnt] = atoi(optarg);
@@ -238,8 +236,8 @@ static int ct_parseopts(int argc, char *const *argv) {
     config_init(&cfg);
     if (!config_read_file(&cfg, ct_opt.o_config)) {
         tlog_error("error while reading config file\r\n%s:%d - %s",
-                 config_error_file(&cfg), config_error_line(&cfg),
-                 config_error_text(&cfg));
+                   config_error_file(&cfg), config_error_line(&cfg),
+                   config_error_text(&cfg));
         return -EINVAL;
     }
 
@@ -291,15 +289,14 @@ static int fid_parent(const char *mnt, const lustre_fid *fid, char *parent,
 {
     int         rc;
     int         linkno = 0;
-    long long     recno = -1;
-    char         file[PATH_MAX];
-    char         strfid[FID_NOBRACE_LEN + 1];
+    long long   recno = -1;
+    char        file[PATH_MAX];
+    char        strfid[FID_NOBRACE_LEN + 1];
     char        *ptr;
 
     snprintf(strfid, sizeof(strfid), DFID_NOBRACE, PFID(fid));
 
-    rc = llapi_fid2path(mnt, strfid, file, sizeof(file),
-                &recno, &linkno);
+    rc = llapi_fid2path(mnt, strfid, file, sizeof(file), &recno, &linkno);
     if (rc < 0)
         return rc;
 
@@ -483,7 +480,7 @@ out:
 static int ct_archive_data_big (struct hsm_copyaction_private *hcp, const char *src,
                                 const char *object_name, int src_fd, struct stat *src_st,
                                 const struct hsm_action_item *hai, long hal_flags) {
-	#ifndef UNIT_TEST
+    #ifndef UNIT_TEST
     struct hsm_extent he;
     time_t last_report_time;
     char *dbuf = NULL;
@@ -493,12 +490,12 @@ static int ct_archive_data_big (struct hsm_copyaction_private *hcp, const char *
     __u64 file_offset = 0;
     char *dbuf = NULL;
     __u64 length = 0;
-	#endif
+    #endif
     int rc = 0;
     double start_ct_now = ct_now();
     time_t now;
 
-#ifndef UNIT_TEST
+    #ifndef UNIT_TEST
     // TODO: current code has not put striping info into object meta part
     // if we need it, or use default striping setting in lustre directory when restore data ?
     strippingInfo stripping_params;
@@ -524,7 +521,7 @@ static int ct_archive_data_big (struct hsm_copyaction_private *hcp, const char *
         tlog_error("progress ioctl for archive '%s'", object_name);
         goto out;
     }
-#endif
+    #endif
     // setup properities for put object
     S3PutProperties putProperties;
     ct_mk_put_properties(&putProperties);
@@ -557,12 +554,10 @@ static int ct_archive_data_big (struct hsm_copyaction_private *hcp, const char *
         is_retryable = S3_status_is_retryable(rc);
     } while (is_retryable && should_retry(&retry_count));
 
-    // TODO: read AWS API DOC, if upload_id always not 0 when where have no error happed
     if (manager.upload_id == NULL) {
-	    tlog_error(
-		    "failed to initiate multipart upload for object '%s' on bucket '%s'",
-		    object_name, bucket_name);
-	    goto clean;
+        tlog_error("failed to initiate multipart upload for object '%s' on bucket '%s'",
+                   object_name, bucket_name);
+                   goto clean;
     }
 
     assert(manager.gb == NULL);
@@ -580,77 +575,70 @@ static int ct_archive_data_big (struct hsm_copyaction_private *hcp, const char *
     MultipartPartData part_data;
     memset(&part_data, 0, sizeof(MultipartPartData));
 
-	todoContentLength -= CHUNK_SIZE * manager.next_etags_pos;
-	for (int seq = manager.next_etags_pos + 1; seq <= total_seq; seq++) {
-		part_data.manager = &manager;
-		part_data.seq	 = seq;
-		if (part_data.put_object_data.gb == NULL) {
-			part_data.put_object_data = data;
-		}
-		partContentLength = ((contentLength > CHUNK_SIZE) ?
-					     CHUNK_SIZE :
-					     contentLength);
-		tlog_info("%s Part Seq %d, length=%d start", src, seq,
-			  partContentLength);
-		part_data.put_object_data.contentLength = partContentLength;
-		part_data.put_object_data.originalContentLength =
-			partContentLength;
-		part_data.put_object_data.totalContentLength = todoContentLength;
-		part_data.put_object_data.totalOriginalContentLength =
-			totalContentLength;
-		putProperties.md5 = 0;
-		int retry_count	  = RETRYCOUNT;
+    todoContentLength -= CHUNK_SIZE * manager.next_etags_pos;
+    for (int seq = manager.next_etags_pos + 1; seq <= total_seq; seq++) {
+        part_data.manager = &manager;
+        part_data.seq	 = seq;
+        if (part_data.put_object_data.gb == NULL) {
+            part_data.put_object_data = data;
+        }
+        partContentLength = ((contentLength > CHUNK_SIZE) ? CHUNK_SIZE : contentLength);
+        tlog_info("%s Part Seq %d, length=%d start", src, seq, partContentLength);
 
-		do {
-			S3_upload_part(&bucketContext, object_name, &putProperties,
-				       &multipart_upload_part_handler, seq,
-				       manager.upload_id, partContentLength, NULL,
-				       TIMEOUT_MS, &part_data);
-		} while (S3_status_is_retryable(
-				 part_data.put_object_data.status) &&
-			 should_retry(&retry_count));
+        part_data.put_object_data.contentLength = partContentLength;
+        part_data.put_object_data.originalContentLength = partContentLength;
+        part_data.put_object_data.totalContentLength = todoContentLength;
+        part_data.put_object_data.totalOriginalContentLength = totalContentLength;
+        putProperties.md5 = 0;
+        int retry_count = RETRYCOUNT;
 
-		if (part_data.put_object_data.status != S3StatusOK) {
-			tlog_error(
-				"failed to put Part Seq of %d, for object '%s'",
-				seq, object_name);
-			goto clean;
-		}
-		contentLength -= CHUNK_SIZE;
-		todoContentLength -= CHUNK_SIZE;
+        do {
+            S3_upload_part(&bucketContext, object_name, &putProperties,
+                           &multipart_upload_part_handler, seq,
+                           manager.upload_id, partContentLength, NULL,
+                           TIMEOUT_MS, &part_data);
+        } while (S3_status_is_retryable(part_data.put_object_data.status) &&
+                                        should_retry(&retry_count));
+
+        if (part_data.put_object_data.status != S3StatusOK) {
+            tlog_error("failed to put Part Seq of %d, for object '%s'",
+                       seq, object_name);
+            goto clean;
+        }
+        contentLength -= CHUNK_SIZE;
+        todoContentLength -= CHUNK_SIZE;
         assert(manager.gb == NULL);
-	}
+    }
 
-	int size = 0;
-	size += growbuffer_append(&(manager.gb), "<CompleteMultipartUpload>",
-				  strlen("<CompleteMultipartUpload>"));
+    int size = 0;
+    size += growbuffer_append(&(manager.gb), "<CompleteMultipartUpload>",
+                              strlen("<CompleteMultipartUpload>"));
 
-	for (int i = 0, n = 0; i < total_seq; i++) {
-        char buf[ 256 ];
-		n = snprintf(buf, sizeof(buf),
-			     "<Part><PartNumber>%d</PartNumber>"
-			     "<ETag>%s</ETag></Part>",
-			     i + 1, manager.etags[ i ]);
-		size += growbuffer_append(&(manager.gb), buf, n);
-	}
-	size += growbuffer_append(&(manager.gb), "</CompleteMultipartUpload>",
-				  strlen("</CompleteMultipartUpload>"));
-	manager.remaining = size;
+    for (int i = 0, n = 0; i < total_seq; i++) {
+        char buf[256];
+        n = snprintf(buf, sizeof(buf), "<Part><PartNumber>%d</PartNumber>"
+                     "<ETag>%s</ETag></Part>", i + 1, manager.etags[ i ]);
+        size += growbuffer_append(&(manager.gb), buf, n);
+    }
 
-	retry_count = RETRYCOUNT;
-	do {
-		S3_complete_multipart_upload(&bucketContext, object_name,
-					     &multipart_commit_handler, manager.upload_id,
-					     manager.remaining, NULL, TIMEOUT_MS,
-					     &manager);
-	} while (S3_status_is_retryable(manager.remaining) &&
-		 should_retry(&retry_count));
-	if (manager.remaining) {
-		tlog_error(
-			"failed to complete multipart upload of %d, for object '%s'",
-			manager.upload_id, object_name);
-		goto clean;
-	}
+    size += growbuffer_append(&(manager.gb), "</CompleteMultipartUpload>",
+                              strlen("</CompleteMultipartUpload>"));
+    manager.remaining = size;
+
+    retry_count = RETRYCOUNT;
+    do {
+        S3_complete_multipart_upload(&bucketContext, object_name,
+                                     &multipart_commit_handler,
+                                     manager.upload_id, manager.remaining, NULL,
+                                     TIMEOUT_MS, &manager);
+
+    } while (S3_status_is_retryable(manager.remaining) &&  should_retry(&retry_count));
+
+    if (manager.remaining) {
+        tlog_error("failed to complete multipart upload of %d, for object '%s'",
+                   manager.upload_id, object_name);
+        goto clean;
+    }
 
 #ifndef UNIT_TEST
     now = time(NULL);
@@ -669,27 +657,27 @@ static int ct_archive_data_big (struct hsm_copyaction_private *hcp, const char *
 #endif
 
 clean:
-	if (manager.upload_id) {
-		free(manager.upload_id);
-	}
-	for (int i = 0; i < manager.next_etags_pos; i++) {
-		free(manager.etags[ i ]);
-	}
-	growbuffer_destroy(manager.gb);
-	free(manager.etags);
+    if (manager.upload_id) {
+        free(manager.upload_id);
+    }
+    for (int i = 0; i < manager.next_etags_pos; i++) {
+        free(manager.etags[ i ]);
+    }
+    growbuffer_destroy(manager.gb);
+    free(manager.etags);
 
 out:
-	if (dbuf != NULL)
-		free(dbuf);
+    if (dbuf != NULL)
+        free(dbuf);
 
-	if (!rc) {
-		tlog_info("copied %ju bytes in %f seconds", src_st->st_size,
-			  ct_now() - start_ct_now);
-	} else {
-		tlog_error("failed to upload %s", object_name);
-	}
+    if (!rc) {
+        tlog_info("copied %ju bytes in %f seconds", src_st->st_size,
+        ct_now() - start_ct_now);
+    } else {
+        tlog_error("failed to upload %s", object_name);
+    }
 
-	return rc;
+    return rc;
 }
 
 static int ct_restore_data(struct hsm_copyaction_private *hcp, const char *src,
@@ -758,10 +746,10 @@ static int ct_restore_data(struct hsm_copyaction_private *hcp, const char *src,
             double before_lustre_write = ct_now();
             pwrite(dst_fd, data.buffer, data.contentLength, 0);
             tlog_info("Writing %s of %llu bytes offset %llu to "
-                     "lustre "
-                     "took %fs",
-                     object_name, length, file_offset,
-                     ct_now() - before_lustre_write);
+                      "lustre "
+                      "took %fs",
+                      object_name, length, file_offset,
+                      ct_now() - before_lustre_write);
 
             if (data.buffer != NULL)
                 free(data.buffer);
@@ -792,7 +780,7 @@ static int ct_restore_data(struct hsm_copyaction_private *hcp, const char *src,
 
 out:
     tlog_info("copied %jd bytes in %f seconds", (uintmax_t)length,
-             ct_now() - start_ct_now);
+              ct_now() - start_ct_now);
     return rc;
 }
 
@@ -912,7 +900,7 @@ int ct_restore(const struct hsm_action_item *hai, const long hal_flags, char *pa
     rc = llapi_hsm_action_get_dfid(hcp, &dfid);
     if (rc < 0) {
         tlog_error("restoring " DFID ", cannot get FID of created volatile file",
-                 PFID(&hai->hai_fid));
+                   PFID(&hai->hai_fid));
         goto end_ct_restore;
     }
 
@@ -981,15 +969,15 @@ int ct_remove(const struct hsm_action_item *hai, const long hal_flags, char *fil
 
     retry_count = RETRYCOUNT;
     do {
-	    S3_delete_object(&localbucketContext, object_name, NULL, 0,
-			     &deleteResponseHandler, &delete_data);
+         S3_delete_object(&localbucketContext, object_name, NULL, 0,
+                          &deleteResponseHandler, &delete_data);
     } while (S3_status_is_retryable(delete_data.status) &&
-	     should_retry(&retry_count));
+             should_retry(&retry_count));
 
     if (delete_data.status != S3StatusOK) {
-	    rc = -EIO;
-	    tlog_error("S3Error %s", S3_get_status_name(delete_data.status));
-	    goto end_ct_remove;
+        rc = -EIO;
+        tlog_error("S3Error %s", S3_get_status_name(delete_data.status));
+        goto end_ct_remove;
     }
 
 end_ct_remove:
@@ -1031,7 +1019,7 @@ int main(int argc, char **argv) {
 
     strlcpy(cmd_name, basename(argv[0]), sizeof(cmd_name));
 
-	tlog_setlevel(TLOG_DEBUG);
+    tlog_setlevel(TLOG_DEBUG);
 
     rc = S3_initialize(NULL, S3_INIT_ALL, host);
     if (rc != 0) {
@@ -1071,13 +1059,13 @@ int main(int argc, char **argv) {
     }
 
     char *dst = rindex(test_file, (int)'/') + 1;
-	struct hsm_copyaction_private *hcp = NULL;
-	char *src = test_file;
-	int src_fd;
-	struct stat src_st;
-	struct hsm_action_item *hai = NULL;
-	long hal_flags = 0;
-	stat(test_file, &src_st);
+    struct hsm_copyaction_private *hcp = NULL;
+    char *src = test_file;
+    int src_fd;
+    struct stat src_st;
+    struct hsm_action_item *hai = NULL;
+    long hal_flags = 0;
+    stat(test_file, &src_st);
 
     switch (test_case)
     {
