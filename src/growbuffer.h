@@ -5,13 +5,13 @@
 #endif
 
 typedef struct growbuffer {
-	// The total number of bytes, and the start byte
-	int size;
-	// The start byte
-	int start;
-	// The blocks
-	char data[ 64 * 1024 ];
-	struct growbuffer *prev, *next;
+    // The total number of bytes, and the start byte
+    int size;
+    // The start byte
+    int start;
+    // The blocks
+    char data[ 64 * 1024 ];
+    struct growbuffer *prev, *next;
 } growbuffer;
 
 // returns nonzero on success, zero on out of memory

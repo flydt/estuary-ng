@@ -30,8 +30,8 @@
  */
 /*
  * Copyright (c) 2020, Irish Centre for High End Computing (ICHEC), NUI Galway
- * Authors: 
- *     Ciarán O'Rourke <ciaran.orourke@ichec.ie>, 
+ * Authors:
+ *     Ciarán O'Rourke <ciaran.orourke@ichec.ie>,
  *     Sophie Wenzel-Teuber <sophie.wenzel-teuber@ichec.ie>
  *
  * Update to a new version of Lustre and Libs3
@@ -68,8 +68,6 @@ extern const int TIMEOUT_MS;
 
 /* Progress reporting period */
 #define REPORT_INTERVAL_DEFAULT 30
-
-#define UNIT_TEST 1
 
 struct ct_options {
     int o_copy_attrs;

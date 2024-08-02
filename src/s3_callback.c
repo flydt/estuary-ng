@@ -9,7 +9,7 @@
 // all of callback function define
 ///////////////////////////////////////////////////////////////////////////////////////
 
-int putObjectDataCallback(int bufferSize, char *buffer,
+int put_objectdata_callback(int bufferSize, char *buffer,
                                  void *callbackData) {
     put_object_callback_data *data = (put_object_callback_data *)callbackData;
     int size = 0;
@@ -31,23 +31,15 @@ int putObjectDataCallback(int bufferSize, char *buffer,
     return size;
 }
 
-void getResponseCompleteCallback(S3Status status,
-                                        const S3ErrorDetails *error,
-                                        void *callbackData) {
+void s3_response_complete_callback(S3Status status,
+                                   const S3ErrorDetails *error,
+                                   void *callbackData) {
     get_object_callback_data *data = (get_object_callback_data *)callbackData;
     data->status = status;
     return;
 }
 
-void putResponseCompleteCallback(S3Status status,
-                                        const S3ErrorDetails *error,
-                                        void *callbackData) {
-    put_object_callback_data *data = (put_object_callback_data *)callbackData;
-    data->status = status;
-    return;
-}
-
-S3Status responseGetObjectPropertiesCallback(const S3ResponseProperties *properties,
+S3Status s3_response_get_object_properties_callback(const S3ResponseProperties *properties,
                                     void *callbackData) {
     get_object_callback_data *data = (get_object_callback_data *)callbackData;
 
@@ -60,17 +52,9 @@ S3Status responseGetObjectPropertiesCallback(const S3ResponseProperties *propert
         strncpy(data->md5, properties->eTag + 1, MD5_ASCII - 1);
     }
 
+    // TODO: need collect what lustre meta data we want to use when put object's meta data
     for (int i = 0; i < properties->metaDataCount; i++) {
-        if (strcmp(properties->metaData[i].name, "chunksize") == 0) {
-            char *err;
-            data->chunk_size = strtoll(properties->metaData[i].value, &err, 10);
-            tlog_info("properties info2: i %d, value:%ld, chunk_size:%ld",
-                      i, properties->metaData[i].value, strtoll(properties->metaData[i].value, &err, 10));
-            if (*err) {
-                tlog_error("Error while parsing chunk_size, non-covertible part: %s", err);
-                return S3StatusAbortedByCallback;
-            }
-        } else if (strcmp(properties->metaData[i].name, "totallength") == 0) {
+        if (strcmp(properties->metaData[i].name, "totallength") == 0) {
             char *err;
             data->totalLength = strtoll(properties->metaData[i].value, &err, 10);
             tlog_info("properties info3: i %d, value:%ld, totalLength:%ld",
@@ -82,12 +66,12 @@ S3Status responseGetObjectPropertiesCallback(const S3ResponseProperties *propert
         }
     }
 
-    tlog_info("data info1: buffer_offset %ld, chunk_size:%ld, totalLength:%ld, contentLength:%ld, md5:%s",
-              data->buffer_offset, data->chunk_size, data->totalLength, data->contentLength, data->md5);
+    tlog_info("data info1: buffer_offset %ld, totalLength:%ld, contentLength:%ld, md5:%s",
+              data->buffer_offset, data->totalLength, data->contentLength, data->md5);
     return S3StatusOK;
 }
 
-S3Status getObjectDataCallback(int bufferSize, const char *buffer, void *callbackData) {
+S3Status get_objectdata_callback(int bufferSize, const char *buffer, void *callbackData) {
     get_object_callback_data *data = (get_object_callback_data *)callbackData;
     int size = 0;
 
@@ -133,9 +117,9 @@ S3Status initial_multipart_response_callback(const char * upload_id,
 }
 
 S3Status multipart_put_part_response_properies_callback
-    (const S3ResponseProperties *properties, void *callbackData)
+ (const S3ResponseProperties *properties, void *callbackData)
 {
-    responsePropertiesCallback(properties, callbackData);
+    s3_response_properties_callback(properties, callbackData);
     MultipartPartData *data = (MultipartPartData *) callbackData;
     int seq = data->seq;
     const char *etag = properties->eTag;
@@ -210,15 +194,14 @@ void multipart_response_complete_callback(S3Status status,
     if (error && error->extraDetailsCount) {
         tlog_error("Extra Details:");
         for (int i = 0; i < error->extraDetailsCount; i++) {
-                   tlog_error("%s: %s", error->extraDetails[i].name, error->extraDetails[i].value);
+            tlog_error("%s: %s", error->extraDetails[i].name, error->extraDetails[i].value);
         }
     }
 }
 
 // This callback does the same thing for every request type: prints out the
 // properties if the user has requested them to be so
-S3Status responsePropertiesCallback
-    (const S3ResponseProperties *properties, void *callbackData)
+S3Status s3_response_properties_callback(const S3ResponseProperties *properties, void *callbackData)
 {
     (void) callbackData;
 #ifdef DEBUG

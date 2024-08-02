@@ -66,21 +66,25 @@ extern char secret_key[ S3_MAX_KEY_SIZE ];
 extern char host[ S3_MAX_HOSTNAME_SIZE ];
 extern char bucket_name[ S3_MAX_BUCKET_NAME_SIZE ];
 
+#ifndef MIN_SLEEP_SECOND
+#define MIN_SLEEP_SECOND 1
+#endif
+
 static int ct_parseopts(int argc, char *const *argv);
 
 static int ct_archive_data(struct hsm_copyaction_private *hcp, const char *src,
-			   const char *dst, int src_fd, struct stat *src_st,
-			   const struct hsm_action_item *hai, long hal_flags);
+                           const char *dst, int src_fd, struct stat *src_st,
+                           const struct hsm_action_item *hai, long hal_flags);
 
 static int ct_archive_data_big(struct hsm_copyaction_private *hcp,
-			       const char *src, const char *dst, int src_fd,
-			       struct stat *src_st,
-			       const struct hsm_action_item *hai,
-			       long hal_flags);
+                               const char *src, const char *dst, int src_fd,
+                               struct stat *src_st,
+                               const struct hsm_action_item *hai,
+                               long hal_flags);
 
 static int ct_restore_data(struct hsm_copyaction_private *hcp, const char *src,
-			   const char *dst, int dst_fd,
-			   const struct hsm_action_item *hai, long hal_flags,
-			   char *path);
+                           const char *dst, int dst_fd,
+                           const struct hsm_action_item *hai, long hal_flags,
+                           char *path);
 
 static int ct_s3_cleanup(void);

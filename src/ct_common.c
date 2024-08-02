@@ -252,8 +252,8 @@ int ct_process_item(struct hsm_action_item *hai, const long hal_flags) {
     int rc = 0;
     assert(hai);
 
-	char path[PATH_MAX];
-	char file_name[PATH_MAX];
+    char path[PATH_MAX];
+    char file_name[PATH_MAX];
     if (ct_opt.o_verbose >= LLAPI_MSG_INFO || ct_opt.o_dry_run) {
         /* Print the original path */
         char fid[128];
