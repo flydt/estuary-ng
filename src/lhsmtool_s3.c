@@ -911,7 +911,7 @@ int ct_restore(const struct hsm_action_item *hai, const long hal_flags, char *pa
     }
 
 end_ct_restore:
-    rc = ct_action_done(&hcp, hai, hp_flags, rc);
+    rc |= ct_action_done(&hcp, hai, hp_flags, rc);
 
     /* object swaping is done by cdt at copy end, so close of volatile file
      * cannot be done before */
@@ -961,7 +961,7 @@ int ct_remove(const struct hsm_action_item *hai, const long hal_flags, char *fil
     }
 
 end_ct_remove:
-    rc = ct_action_done(&hcp, hai, 0, rc);
+    rc |= ct_action_done(&hcp, hai, 0, rc);
 
     return rc;
 }

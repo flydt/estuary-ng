@@ -169,10 +169,10 @@ int ct_action_done(struct hsm_copyaction_private **phcp,
         tlog_error("completed action on '%s' has been canceled: "
                      "cookie=%#jx, FID="DFID,
                  lstr, (uintmax_t)hai->hai_cookie, PFID(&hai->hai_fid));
-    else if (rc < 0)
-        tlog_error("llapi_hsm_action_end() on '%s' failed", lstr);
+    else if (rc)
+        tlog_error("llapi_hsm_action_end() on '%s' failed  (rc=%d)", lstr, rc);
     else
-        tlog_info("llapi_hsm_action_end() on '%s' ok (rc=%d)", lstr, rc);
+        tlog_info("llapi_hsm_action_end() on '%s' ok", lstr);
 
     return rc;
 }
