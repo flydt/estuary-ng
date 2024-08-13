@@ -102,7 +102,6 @@ static int get_s3_object(char *objectName, get_object_callback_data *data,
                          S3GetObjectHandler *getObjectHandler) {
 
     assert(objectName && data && getObjectHandler);
-    memset(data, 0, sizeof(get_object_callback_data));
 
     // Get a local copy of the general bucketContext than overwrite the
     // pointer to the bucket_name
@@ -110,24 +109,18 @@ static int get_s3_object(char *objectName, get_object_callback_data *data,
     memcpy(&localbucketContext, &bucketContext, sizeof(S3BucketContext));
     localbucketContext.bucketName = bucket_name;
 
-    data->buffer_offset = 0;
-    data->buffer = NULL;
-
     double before_s3_get = ct_now();
     int retry_count = RETRYCOUNT;
+    uint64_t startByte = 0, byteCount = 0;
 
     do {
-        S3_get_object(&localbucketContext, objectName, NULL, 0, 0, NULL, 0,
+        S3_get_object(&localbucketContext, objectName, NULL, startByte, byteCount, NULL, 0,
                       getObjectHandler, data);
     } while (S3_status_is_retryable(data->status) &&
              should_retry(&retry_count));
 
     tlog_info("S3 get of %s took %fs", objectName, ct_now() - before_s3_get);
 
-    if (data->buffer == NULL && data->totalLength != 0) {
-        tlog_info("data->buffer == NULL");
-        return -ENOMEM;
-    }
     if (data->status != S3StatusOK) {
         tlog_error("S3Error %s", S3_get_status_name(data->status));
         return -EIO;
@@ -365,7 +358,6 @@ static int ct_archive_data(struct hsm_copyaction_private *hcp, const char *src,
     struct hsm_extent he;
     time_t last_report_time;
     char *dbuf = NULL;
-    __u64 file_offset = hai->hai_extent.offset;
     __u64 length = hai->hai_extent.length;
     int rc = 0;
     double start_ct_now = ct_now();
@@ -387,7 +379,7 @@ static int ct_archive_data(struct hsm_copyaction_private *hcp, const char *src,
 
     last_report_time = time(NULL);
 
-    he.offset = file_offset;
+    he.offset = 0;
     he.length = 0;
     rc = llapi_hsm_action_progress(hcp, &he, length, 0);
     if (rc < 0) {
@@ -411,11 +403,16 @@ static int ct_archive_data(struct hsm_copyaction_private *hcp, const char *src,
     memset(&data, 0, sizeof(put_object_callback_data));
 
     double before_lustre_read = ct_now();
-    pread(src_fd, dbuf, length, file_offset);
-    tlog_info(
-        "Reading data from %s of %llu bytes offset %llu from lustre "
-        "took %fs",
-        src, length, file_offset, ct_now() - before_lustre_read);
+    ssize_t rc_read = read(src_fd, dbuf, length);
+    if (rc_read != (ssize_t)length)
+    {
+        tlog_error("failed to read data from %s", src);
+        rc = -EIO;
+        goto out;
+    } else {
+        tlog_info("Reading data from %s of %llu bytes took %fs", src, length,
+                  ct_now() - before_lustre_read);
+    }
 
     data.buffer = dbuf;
     data.contentLength = length;
@@ -446,20 +443,6 @@ static int ct_archive_data(struct hsm_copyaction_private *hcp, const char *src,
         rc = -EIO;
         tlog_error("S3Error %s", S3_get_status_name(data.status));
         goto out;
-    }
-
-    now = time(NULL);
-    if (now >= last_report_time + ct_opt.o_report_int) {
-        tlog_info("sending progress report for archiving %s", src);
-        he.offset = file_offset;
-        he.length = length;
-        rc = llapi_hsm_action_progress(hcp, &he, length, 0);
-        if (rc < 0) {
-            /* Action has been canceled or something wrong
-             * is happening. Stop copying data. */
-            tlog_error("progress ioctl for copy '%s'->'%s' failed", src, dst);
-            goto out;
-        }
     }
 
     rc = 0;
@@ -552,8 +535,9 @@ static int ct_archive_data_big (struct hsm_copyaction_private *hcp, const char *
     assert(manager.gb == NULL);
 
     // prepare file handle for multi part upload
-    data.infile = fopen(src, "rb");
-    if (data.infile == NULL) {
+    data.file_name = (char *)src;
+    data.fd = open(data.file_name, O_RDONLY | O_LARGEFILE | O_RSYNC);
+    if (data.fd == -1) {
 	    rc = EIO;
 	    tlog_error("ERROR: Failed to open input file %s: ", src);
 	    goto clean;
@@ -719,24 +703,14 @@ static int ct_restore_data(struct hsm_copyaction_private *hcp, const char *src,
         if (file_offset == 0) {
             // Download data and metadata from the first chunk
             get_object_callback_data data;
+            memset(&data, 0, sizeof(data));
+            data.fd = dst_fd;
+            data.file_name = file_name;
             rc = get_s3_object(object_name, &data, &getObjectHandler);
             if (rc < 0) {
-                if (data.buffer != NULL)
-                    free(data.buffer);
                 goto out;
             }
-
             length = data.contentLength;
-            double before_lustre_write = ct_now();
-            pwrite(dst_fd, data.buffer, data.contentLength, 0);
-            tlog_info("Writing %s of %llu bytes offset %llu to "
-                     "lustre "
-                     "took %fs",
-                     object_name, length, file_offset,
-                     ct_now() - before_lustre_write);
-
-            if (data.buffer != NULL)
-                free(data.buffer);
         } else {
             tlog_error("Invalid HSM request");
             assert(0);
@@ -772,7 +746,6 @@ int ct_archive(const struct hsm_action_item *hai, const long hal_flags, char *fi
     int rc;
     int rcf = 0;
     int hp_flags = 0;
-    int open_flags;
     int src_fd = -1;
 
     rc = ct_begin(&hcp, hai);
@@ -800,10 +773,6 @@ int ct_archive(const struct hsm_action_item *hai, const long hal_flags, char *fi
         tlog_error("cannot open '%s' for read", src);
         goto end_ct_archive;
     }
-
-    open_flags = O_WRONLY | O_NOFOLLOW;
-    /* If extent is specified, don't truncate an old archived copy */
-    open_flags |= ((hai->hai_extent.length == -1) ? O_TRUNC : 0) | O_CREAT;
 
     struct stat src_st;
     if (ct_archive_check(hai, src, src_fd, &src_st) == false)

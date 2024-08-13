@@ -53,51 +53,33 @@ S3Status s3_response_get_object_properties_callback(const S3ResponseProperties *
     }
 
     // TODO: need collect what lustre meta data we want to use when put object's meta data
-    for (int i = 0; i < properties->metaDataCount; i++) {
-        if (strcmp(properties->metaData[i].name, "totallength") == 0) {
-            char *err;
-            data->totalLength = strtoll(properties->metaData[i].value, &err, 10);
-            tlog_info("properties info3: i %d, value:%ld, totalLength:%ld",
-                      i, properties->metaData[i].value, strtoll(properties->metaData[i].value, &err, 10));
-            if (*err) {
-                tlog_error("Error while parsing totalLength, non-covertible part: %s", err);
-                return S3StatusAbortedByCallback;
-            }
-        }
-    }
 
-    tlog_info("data info1: buffer_offset %ld, totalLength:%ld, contentLength:%ld, md5:%s",
-              data->buffer_offset, data->totalLength, data->contentLength, data->md5);
     return S3StatusOK;
 }
 
 S3Status get_objectdata_callback(int bufferSize, const char *buffer, void *callbackData) {
     get_object_callback_data *data = (get_object_callback_data *)callbackData;
-    int size = 0;
 
-    assert(data && buffer);
-    if (data->contentLength) {
-        if (data->buffer == NULL) {
-            // Allocate memory for the buffer
-            data->buffer = malloc(data->contentLength);
-            if (data->buffer == NULL) {
-                // Allocation error
-                return S3StatusAbortedByCallback;
-            }
-        }
-
-        if (data->contentLength > bufferSize) {
-            // Limited by bufferSize
-            size = bufferSize;
-        } else {
-            // Last chunk
-            size = data->contentLength;
-        }
-        memcpy(data->buffer + data->buffer_offset, buffer, size);
-        data->buffer_offset += size;
+    if ((data == NULL) || (buffer == NULL) || (data->contentLength == 0))
+    {
+        abort();
     }
-    return ((size < (size_t)bufferSize) ? S3StatusAbortedByCallback
-                                        : S3StatusOK);
+    ssize_t wrote = write(data->fd, buffer, bufferSize);
+
+    if (wrote < bufferSize)
+    {
+        tlog_error("failed to write file %s offset of %lu with length %d",
+                  data->file_name, data->file_offset, bufferSize);
+        data->status = S3StatusAbortedByCallback;
+        return S3StatusAbortedByCallback;
+    }
+    else
+    {
+        tlog_info("write file %s offset of %lu and length %d",
+                  data->file_name, data->file_offset, bufferSize);
+        data->file_offset += wrote;
+        return S3StatusOK;
+    }
 }
 
 S3Status initial_multipart_response_callback(const char * upload_id,
@@ -140,23 +122,35 @@ int multipart_put_objectdata_callback(int bufferSize, char *buffer,
     if (data->contentLength) {
         int toRead = ((data->contentLength > (unsigned) bufferSize) ?
                       (unsigned) bufferSize : data->contentLength);
-        if (data->infile) {
-            tlog_info("read data by 'fread' in offset %ld", ftell(data->infile));
-            ret = fread(buffer, 1, toRead, data->infile);
+        if (data->fd) {
+            tlog_info("read data from file '%s' offset %ld", data->file_name, data->file_offset);
+            ret = read(data->fd, buffer, toRead);
+            if (ret != toRead)
+            {
+                tlog_error("failed to read file");
+                ret = 0;
+            }
+            else
+            {
+                data->file_offset += toRead;
+            }
         } else {
             tlog_error("infile not initialized");
             abort();
         }
     }
 
-    data->contentLength -= ret;
-    data->totalContentLength -= ret;
+    if (ret)
+    {
+        data->contentLength -= ret;
+        data->totalContentLength -= ret;
 
-    if (data->contentLength && !data->noStatus) {
-        size_t data_remain = data->totalOriginalContentLength - data->totalContentLength;
-        size_t ratio_remain = (100 * data_remain) / data->totalOriginalContentLength;
+        if (data->contentLength && !data->noStatus) {
+            size_t data_remain = data->totalOriginalContentLength - data->totalContentLength;
+            size_t ratio_remain = (100 * data_remain) / data->totalOriginalContentLength;
 
-        tlog_info("%llu bytes remaining (%d%% complete) ...", data->totalContentLength, ratio_remain);
+            tlog_info("%llu bytes remaining (%d%% complete) ...", data->totalContentLength, ratio_remain);
+        }
     }
 
     return ret;

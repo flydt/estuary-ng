@@ -15,22 +15,25 @@ typedef struct put_object_callback_data {
     size_t buffer_offset;
     S3Status status;
     char *buffer;
-    FILE *infile;
     growbuffer *gb;
     size_t contentLength;
     size_t originalContentLength;
     size_t totalContentLength;
     size_t totalOriginalContentLength;
     int noStatus;
+    int fd;
+    char *file_name;
+    size_t file_offset;
 } put_object_callback_data;
 
 typedef struct get_object_callback_data {
-    size_t buffer_offset;
     size_t totalLength;
     size_t contentLength;
-    char *buffer;
     S3Status status;
     char md5[ MD5_ASCII ];
+    int fd;
+    char *file_name;
+    size_t file_offset;
 } get_object_callback_data;
 
 int put_objectdata_callback(int bufferSize, char *buffer, void *callbackData);
