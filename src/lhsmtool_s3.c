@@ -79,7 +79,6 @@
 #include <sys/stat.h>
 #include <libconfig.h>
 #include <libs3.h>
-#include <lz4.h>
 #include <assert.h>
 #include <openssl/md5.h>
 #include <bsd/string.h> /* To get strlcpy */

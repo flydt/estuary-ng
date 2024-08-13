@@ -38,7 +38,7 @@ set(CPACK_RPM_PACKAGE_AUTOREQ "no")
 set(CPACK_RPM_PACKAGE_LICENSE "GNU GPL")
 set(CPACK_RPM_FILE_NAME "RPM-DEFAULT")
 
-set(CPACK_RPM_PACKAGE_REQUIRES "curl, lz4, libcurl, openssl, libconfig, libxml2, libbsd")
+set(CPACK_RPM_PACKAGE_REQUIRES "curl, libcurl, openssl, libconfig, libxml2, libbsd")
 set(CPACK_RPM_INSTALL_WITH_EXEC ON)
 
 set(CPACK_GENERATOR RPM)

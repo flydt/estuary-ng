@@ -10,7 +10,6 @@ add_library(estuary_copytool_growbuffer OBJECT growbuffer.c)
 add_library(estuary_copytool_callback OBJECT s3_callback.c)
 
 target_link_libraries(estuary_copytool PUBLIC 
-    lz4 
     pthread 
     config 
     CURL::libcurl 

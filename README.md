@@ -10,24 +10,18 @@ ng ---- only a postfix to difference with none "-ng" version
 
 change from none "-ng" version
 
-- Optional compression with LZ4
+remove LZ4 support
 
-remove, for simplicity
+bucket and file system path mapping 1:1
 
-- Stripping across multiple objects and buckets
-
-remove, dont need it, we need bucket <---> directory 1:1 mapping, it means object name in bucket is file name in directory
-
-- Verifing checksum when restoring
-
-remove, may add later
+remove checksum when restore
 
 # Building
 
 Estuary requires the following development packages:
 
 ```sh
-sudo dnf install -y libcurl-devel libxml2-devel openssl-devel libconfig-devel lz4-devel libbsd-devel
+sudo dnf install -y libcurl-devel libxml2-devel openssl-devel libconfig-devel libbsd-devel
 ```
 
 and Lustre development headers, see the [LustreSetupGuide](./docs/LustreSetupGuide.md) for some info.
