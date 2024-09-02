@@ -113,6 +113,9 @@ static int get_s3_object(char *objectName, get_object_callback_data *data,
     uint64_t startByte = 0, byteCount = 0;
 
     do {
+        // always seek to offset (0), otherwise retry will lead to data corruption
+        lseek(data->fd, 0, SEEK_SET);
+
         S3_get_object(&localbucketContext, objectName, NULL, startByte, byteCount, NULL, 0,
                       getObjectHandler, data);
     } while (S3_status_is_retryable(data->status) &&
