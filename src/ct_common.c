@@ -194,7 +194,6 @@ void handler(int signal) {
      * and doesn't remove us from mtab (EINPROGRESS). The lustre client
      * does successfully unmount and the mount is actually gone, but the
      * mtab entry remains. So this just makes mtab happier. */
-
     int rc = llapi_hsm_copytool_unregister(&ctdata);
     if (rc)
     {
@@ -280,8 +279,7 @@ int ct_process_item(struct hsm_action_item *hai, const long hal_flags) {
         return rc;
     }
 
-    char path[PATH_MAX];
-    char file_name[PATH_MAX];
+    char file_path[PATH_MAX];
     if (ct_opt.o_verbose >= LLAPI_MSG_INFO || ct_opt.o_dry_run) {
         /* Print the original path */
         char fid[128];
@@ -294,52 +292,46 @@ int ct_process_item(struct hsm_action_item *hai, const long hal_flags) {
                  (uintmax_t)hai->hai_cookie);
 
         // get file posix path from file identifier
-        rc = llapi_fid2path(ct_opt.o_mnt, fid, path, sizeof(path), &recno, &linkno);
+        rc = llapi_fid2path(ct_opt.o_mnt, fid, file_path, sizeof(file_path), &recno, &linkno);
         if (rc < 0) {
             // copytool must get object/file name from path
             // failed to get path means failed to exec HSM command
             tlog_error("cannot get path of FID %s", fid);
             return rc;
         } else {
-            tlog_info("processing file '%s'", path);
+            tlog_info("processing file '%s' with fid %s", file_path, fid);
         }
     }
-
-    char *ptr = strrchr(path, '/');
-    if (ptr)
-        strcpy(file_name, ptr + 1);
-    else
-        strcpy(file_name, path);
 
     switch (hai->hai_action) {
     /* set err_major, minor inside these functions */
     case HSMA_ARCHIVE:
-        tlog_info("Start archive file '%s' to HSM backend", path);
-        rc = ct_archive(hai, hal_flags, file_name);
+        tlog_info("Start archive file '%s' to HSM backend", file_path);
+        rc = ct_archive(hai, hal_flags, file_path);
         if (rc) {
-            tlog_info("Failed to archive '%s' to HSM backend", path);
+            tlog_info("Failed to archive '%s' to HSM backend", file_path);
         } else {
-            tlog_info("Success archive file '%s' to HSM backend", path);
+            tlog_info("Success archive file '%s' to HSM backend", file_path);
         }
         break;
 
     case HSMA_RESTORE:
-        tlog_info("Start restore file '%s' from HSM backend", path);
-        rc = ct_restore(hai, hal_flags, file_name);
+        tlog_info("Start restore file '%s' from HSM backend", file_path);
+        rc = ct_restore(hai, hal_flags, file_path);
         if (rc) {
-            tlog_info("Failed to restore '%s' from HSM backend", path);
+            tlog_info("Failed to restore '%s' from HSM backend", file_path);
         } else {
-            tlog_info("Success restore file '%s' from HSM backend", path);
+            tlog_info("Success restore file '%s' from HSM backend", file_path);
         }
         break;
 
     case HSMA_REMOVE:
-        tlog_info("Start remove file '%s' from HSM backend", path);
-        rc = ct_remove(hai, hal_flags, file_name);
+        tlog_info("Start remove file '%s' from HSM backend", file_path);
+        rc = ct_remove(hai, hal_flags, file_path);
         if (rc) {
-            tlog_info("Failed to remove '%s' from HSM backend", path);
+            tlog_info("Failed to remove '%s' from HSM backend", file_path);
         } else {
-            tlog_info("Success remove '%s' from HSM backend", path);
+            tlog_info("Success remove '%s' from HSM backend", file_path);
         }
         break;
 
@@ -426,8 +418,16 @@ int ct_run(void) {
         return rc;
     }
 
-    signal(SIGINT, handler);
-    signal(SIGTERM, handler);
+    if (signal(SIGINT, handler) == SIG_ERR)
+    {
+        tlog_error("cannot set SIGINT signal handler");
+        goto cleanup;
+    }
+    if (signal(SIGTERM, handler) == SIG_ERR)
+    {
+        tlog_error("cannot set SIGTERM signal handler");
+        goto cleanup;
+    }
 
     while (1) {
         struct hsm_action_list *hal;
