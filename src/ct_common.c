@@ -164,13 +164,24 @@ int ct_action_done(struct hsm_copyaction_private **phcp,
         phcp = &hcp;
     }
 
+    const uint max_retry = 5;
+    int retrys = max_retry;
+msg_resend:
     rc = llapi_hsm_action_end(phcp, &hai->hai_extent, hp_flags, abs(ct_rc));
     if (rc == -ECANCELED)
         tlog_error("completed action on '%s' has been canceled: "
                      "cookie=%#jx, FID="DFID,
                  lstr, (uintmax_t)hai->hai_cookie, PFID(&hai->hai_fid));
     else if (rc)
+    {
+        if ((rc == -EAGAIN) && (retrys >= 0))
+        {
+            sleep(rand() % max_retry);
+            retrys--;
+            goto msg_resend;
+        }
         tlog_error("llapi_hsm_action_end() on '%s' failed  (rc=%d)", lstr, rc);
+    }
     else
         tlog_info("llapi_hsm_action_end() on '%s' ok", lstr);
 
