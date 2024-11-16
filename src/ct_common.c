@@ -194,9 +194,18 @@ void handler(int signal) {
      * and doesn't remove us from mtab (EINPROGRESS). The lustre client
      * does successfully unmount and the mount is actually gone, but the
      * mtab entry remains. So this just makes mtab happier. */
-    llapi_hsm_copytool_unregister(&ctdata);
 
-    _exit(1);
+    int rc = llapi_hsm_copytool_unregister(&ctdata);
+    if (rc)
+    {
+        tlog_error("failed to call llapi_hsm_copytool_unregister() on %s with error %s",
+                    ct_opt.o_mnt, strerror(-rc));
+    } else {
+        tlog_info("success to call llapi_hsm_copytool_unregister() on %s", ct_opt.o_mnt);
+    }
+
+    // return exit code with signal for some purpose
+    _exit(signal);
 }
 
 int ct_begin_restore(struct hsm_copyaction_private **phcp,
@@ -262,6 +271,14 @@ int ct_cleanup(void) {
 int ct_process_item(struct hsm_action_item *hai, const long hal_flags) {
     int rc = 0;
     assert(hai);
+
+    // only support archive/restore action in HSM 1.0
+    if ( (hai->hai_action != HSMA_ARCHIVE) && (hai->hai_action != HSMA_RESTORE) )
+    {
+        tlog_error("unsupport action %d", hsm_copytool_action2name(hai->hai_action));
+        ct_action_done(NULL, hai, 0, -EINVAL);
+        return rc;
+    }
 
     char path[PATH_MAX];
     char file_name[PATH_MAX];
@@ -467,7 +484,16 @@ int ct_run(void) {
             break;
     }
 
-    llapi_hsm_copytool_unregister(&ctdata);
+    int rc1;
+cleanup:
+    rc1 = llapi_hsm_copytool_unregister(&ctdata);
+    if (rc1)
+    {
+        tlog_error("failed to call llapi_hsm_copytool_unregister() on %s with error %s",
+                    ct_opt.o_mnt, strerror(-rc1));
+    } else {
+        tlog_info("success to call llapi_hsm_copytool_unregister() on %s", ct_opt.o_mnt);
+    }
 
     return rc;
 }
