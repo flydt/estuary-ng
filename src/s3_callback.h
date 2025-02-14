@@ -32,7 +32,7 @@ typedef struct get_object_callback_data {
     S3Status status;
     char md5[ MD5_ASCII ];
     int fd;
-    char *file_name;
+    char *file_path;
     size_t file_offset;
 } get_object_callback_data;
 

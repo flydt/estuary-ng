@@ -69,14 +69,14 @@ S3Status get_objectdata_callback(int bufferSize, const char *buffer, void *callb
     if (wrote < bufferSize)
     {
         tlog_error("failed to write file %s offset of %lu with length %d",
-                  data->file_name, data->file_offset, bufferSize);
+                  data->file_path, data->file_offset, bufferSize);
         data->status = S3StatusAbortedByCallback;
         return S3StatusAbortedByCallback;
     }
     else
     {
         tlog_info("write file %s offset of %lu and length %d",
-                  data->file_name, data->file_offset, bufferSize);
+                  data->file_path, data->file_offset, bufferSize);
         data->file_offset += wrote;
         return S3StatusOK;
     }
@@ -107,7 +107,7 @@ S3Status multipart_put_part_response_properies_callback
     const char *etag = properties->eTag;
     data->manager->etags[seq - 1] = strdup(etag);
     data->manager->next_etags_pos = seq;
-    tlog_info("callback for put_part seq of %d,", seq);
+    tlog_info("callback for put_part seq of %d for upload_id %s,", seq, data->manager->upload_id);
     return S3StatusOK;
 }
 
@@ -123,7 +123,6 @@ int multipart_put_objectdata_callback(int bufferSize, char *buffer,
         int toRead = ((data->contentLength > (unsigned) bufferSize) ?
                       (unsigned) bufferSize : data->contentLength);
         if (data->fd) {
-            tlog_info("read data from file '%s' offset %ld", data->file_name, data->file_offset);
             ret = read(data->fd, buffer, toRead);
             if (ret != toRead)
             {
@@ -148,8 +147,6 @@ int multipart_put_objectdata_callback(int bufferSize, char *buffer,
         if (data->contentLength && !data->noStatus) {
             size_t data_remain = data->totalOriginalContentLength - data->totalContentLength;
             size_t ratio_remain = (100 * data_remain) / data->totalOriginalContentLength;
-
-            tlog_info("%llu bytes remaining (%d%% complete) ...", data->totalContentLength, ratio_remain);
         }
     }
 
@@ -174,8 +171,8 @@ void multipart_response_complete_callback(S3Status status,
                                      const S3ErrorDetails *error,
                                      void *callbackData)
 {
-    assert(error);
     (void) callbackData;
+
     if (error && error->message) {
         tlog_error("Message: %s", error->message);
     }

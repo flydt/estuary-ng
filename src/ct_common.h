@@ -58,13 +58,19 @@
 
 extern char cmd_name[PATH_MAX];
 extern char fs_name[MAX_OBD_NAME + 1];
+extern char path_prefix[ PATH_MAX ];
 
 extern int err_major;
 
 extern struct ct_options ct_opt;
 extern const uint64_t MAX_OBJ_SIZE_LEVEL;
 extern const uint64_t CHUNK_SIZE;
+extern const uint64_t CHUNK_SIZE_STEP;
+extern const uint64_t CHUNK_SIZE_MAX;
 extern const int TIMEOUT_MS;
+extern const double SLOW_IO_TIME;
+extern const unsigned int MAX_HSM_REQUESTS;
+extern int  max_requests;
 
 /* Progress reporting period */
 #define REPORT_INTERVAL_DEFAULT 30
@@ -163,3 +169,12 @@ int ct_process_item_async(const struct hsm_action_item *hai, long hal_flags);
 
 /* Daemon waits for messages from the kernel; run it in the background. */
 int ct_run(void);
+
+int llapi_hsm_action_progress_ex(struct hsm_copyaction_private *hcp,
+                                 const struct hsm_extent *he, __u64 total,
+                                 int hp_flags);
+int llapi_hsm_action_begin_ex(struct hsm_copyaction_private **phcp,
+                              const struct hsm_copytool_private *ct,
+                              const struct hsm_action_item *hai,
+                              int restore_mdt_index, int restore_open_flags,
+							  bool is_error);

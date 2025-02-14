@@ -53,6 +53,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <pthread.h>
+#include <semaphore.h>
 #include <signal.h>
 #include <assert.h>
 #include <sys/xattr.h>
@@ -63,13 +64,25 @@
 char cmd_name[PATH_MAX];
 char fs_name[MAX_OBD_NAME + 1];
 
-// file size bigger than 200M will use multipart upload
-// multipart upload use chunk size of 50MB
-const uint64_t MAX_OBJ_SIZE_LEVEL = 200 * 1024 * 1024;
-const uint64_t CHUNK_SIZE = 50 * 1024 * 1024;
-const int TIMEOUT_MS = 5 * 1000;
-int err_major;
+// file size bigger than 256M will use multipart upload
+// multipart upload use default chunk size of 16MB
+const uint64_t MAX_OBJ_SIZE_LEVEL = 256 * 1024 * 1024L;
+const uint64_t CHUNK_SIZE = 16 * 1024 * 1024L;
+const uint64_t CHUNK_SIZE_MAX = 5 * 1024 * 1024 * 1024L;
+const int TIMEOUT_MS = 0;
 
+// threshold for slow IO complete time
+const double SLOW_IO_TIME = 30.0;
+
+// max concurrent requests can handle
+const unsigned int MAX_HSM_REQUESTS = 100;
+sem_t hsm_req_sem;
+int  max_requests;
+
+// terminate flag for copytool main thread
+bool stop_it = false;
+
+int err_major;
 
 /* hsm_copytool_private will hold an open FD on the lustre mount point
  * for us. This is to make sure it doesn't drop out from under us (and
@@ -86,11 +99,8 @@ struct ct_options ct_opt = {
 
 int should_retry(int *retry_count) {
     if ((*retry_count)--) {
-        // Sleep before next retry; start out with a 1 second sleep
-        static int retrySleepInterval = 1;
-        sleep(retrySleepInterval);
-        // Next sleep 1 second longer
-        ++retrySleepInterval;
+        int time_sleep = rand() % 5000;
+        usleep(time_sleep);
         return 1;
     }
 
@@ -156,7 +166,7 @@ int ct_action_done(struct hsm_copyaction_private **phcp,
     ct_path_lustre(lstr, sizeof(lstr), ct_opt.o_mnt, &hai->hai_fid);
 
     if (phcp == NULL || *phcp == NULL) {
-        rc = llapi_hsm_action_begin(&hcp, ctdata, hai, -1, 0, true);
+        rc = llapi_hsm_action_begin_ex(&hcp, ctdata, hai, -1, 0, true);
         if (rc < 0) {
             tlog_error("llapi_hsm_action_begin() on '%s' failed", lstr);
             return rc;
@@ -174,7 +184,7 @@ msg_resend:
                  lstr, (uintmax_t)hai->hai_cookie, PFID(&hai->hai_fid));
     else if (rc)
     {
-        if ((rc == -EAGAIN) && (retrys >= 0))
+        if (retrys >= 0)
         {
             sleep(rand() % max_retry);
             retrys--;
@@ -189,22 +199,31 @@ msg_resend:
 }
 
 void handler(int signal) {
-    psignal(signal, "exiting");
-    /* If we don't clean up upon interrupt, umount thinks there's a ref
-     * and doesn't remove us from mtab (EINPROGRESS). The lustre client
-     * does successfully unmount and the mount is actually gone, but the
-     * mtab entry remains. So this just makes mtab happier. */
-    int rc = llapi_hsm_copytool_unregister(&ctdata);
-    if (rc)
-    {
-        tlog_error("failed to call llapi_hsm_copytool_unregister() on %s with error %s",
-                    ct_opt.o_mnt, strerror(-rc));
-    } else {
-        tlog_info("success to call llapi_hsm_copytool_unregister() on %s", ct_opt.o_mnt);
+    if (signal == SIGTERM || signal == SIGINT) {
+        tlog_info("get SIGTERM signal, exting...");
     }
 
-    // return exit code with signal for some purpose
-    _exit(signal);
+    if (!stop_it) {
+        stop_it = true;
+    }
+
+    while (true) {
+        int working_threads = 0;
+        if (sem_getvalue(&hsm_req_sem, &working_threads)) {
+            tlog_error("failed to get semaphore value with error %s", strerror(errno));
+            assert(0);
+        }
+
+        // get terminate signal
+        // there still have working threads, must wait
+        if (working_threads < max_requests) {
+            tlog_info("still have %d working threads running, wait ......",
+            max_requests - working_threads);
+            sleep(1);
+            continue;
+        }
+        exit(0);
+    }
 }
 
 int ct_begin_restore(struct hsm_copyaction_private **phcp,
@@ -215,8 +234,7 @@ int ct_begin_restore(struct hsm_copyaction_private **phcp,
 
     assert(hai);
 
-    rc =
-        llapi_hsm_action_begin(phcp, ctdata, hai, mdt_index, open_flags, false);
+    rc = llapi_hsm_action_begin_ex(phcp, ctdata, hai, mdt_index, open_flags, false);
     if (rc < 0) {
         ct_path_lustre(src, sizeof(src), ct_opt.o_mnt, &hai->hai_fid);
         tlog_error("llapi_hsm_action_begin() on '%s' failed", src);
@@ -274,7 +292,8 @@ int ct_process_item(struct hsm_action_item *hai, const long hal_flags) {
     // only support archive/restore action in HSM 1.0
     if ( (hai->hai_action != HSMA_ARCHIVE) && (hai->hai_action != HSMA_RESTORE) )
     {
-        tlog_error("unsupport action %d", hsm_copytool_action2name(hai->hai_action));
+        tlog_error("unsupport action '%d : %s'", hai->hai_action,
+                    hsm_copytool_action2name(hai->hai_action));
         ct_action_done(NULL, hai, 0, -EINVAL);
         return rc;
     }
@@ -297,7 +316,7 @@ int ct_process_item(struct hsm_action_item *hai, const long hal_flags) {
             // copytool must get object/file name from path
             // failed to get path means failed to exec HSM command
             tlog_error("cannot get path of FID %s", fid);
-            return rc;
+            goto stop_it;
         } else {
             tlog_info("processing file '%s' with fid %s", file_path, fid);
         }
@@ -309,7 +328,7 @@ int ct_process_item(struct hsm_action_item *hai, const long hal_flags) {
         tlog_info("Start archive file '%s' to HSM backend", file_path);
         rc = ct_archive(hai, hal_flags, file_path);
         if (rc) {
-            tlog_info("Failed to archive '%s' to HSM backend", file_path);
+            tlog_error("Failed to archive '%s' to HSM backend", file_path);
         } else {
             tlog_info("Success archive file '%s' to HSM backend", file_path);
         }
@@ -341,12 +360,12 @@ int ct_process_item(struct hsm_action_item *hai, const long hal_flags) {
 
     default:
         rc = -EINVAL;
-        tlog_error("unknown action %d, on '%s'", hai->hai_action,
-                 ct_opt.o_mnt);
+        tlog_error("unknown action %d, on '%s'", hai->hai_action, ct_opt.o_mnt);
         ct_action_done(NULL, hai, 0, rc);
     }
 
-    return 0;
+stop_it:
+    return rc;
 }
 
 void *ct_thread(void *data) {
@@ -357,6 +376,7 @@ void *ct_thread(void *data) {
 
     free(cttd->hai);
     free(cttd);
+    sem_post(&hsm_req_sem);
     pthread_exit((void *)(intptr_t)rc);
 }
 
@@ -395,7 +415,51 @@ int ct_process_item_async(const struct hsm_action_item *hai, long hal_flags) {
         tlog_error("cannot create thread for '%s' service", ct_opt.o_mnt);
 
     pthread_attr_destroy(&attr);
-    return 0;
+    return rc;
+}
+
+static void ct_request_ctl()
+{
+    if (stop_it)
+        return;
+
+    // requests concurrency control
+    while (true) {
+        // use sem_timedwait, instead of sem_wait
+        // because we want to check stop_it flag for quit copytool
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        ts.tv_sec += 1;
+        errno = 0;
+
+        int rc_sem = sem_timedwait(&hsm_req_sem, &ts);
+        if (!rc_sem && !stop_it) {
+            // not reach max hsm requests limit, can process new request
+            break;
+        }
+
+        if (stop_it) {
+            if (!rc_sem) {
+                // adjust semphore before check its value for check working threads
+                sem_post(&hsm_req_sem);
+            }
+
+            int working_threads = 0;
+            if (sem_getvalue(&hsm_req_sem, &working_threads)) {
+                tlog_error("failed to get semaphore value with error %s", strerror(errno));
+                assert(0);
+            }
+
+            // get terminate signal
+            // there still have working threads, must wait
+            if (working_threads < max_requests) {
+                tlog_info("still have %d working threads running, wait ......", max_requests - working_threads);
+                sleep(1);
+                continue;
+            }
+            break;
+        }
+    }
 }
 
 /* Daemon waits for messages from the kernel; run it in the background. */
@@ -418,16 +482,36 @@ int ct_run(void) {
         return rc;
     }
 
-    if (signal(SIGINT, handler) == SIG_ERR)
+    struct sigaction cleanup_sigaction;
+    memset(&cleanup_sigaction, 0, sizeof(cleanup_sigaction));
+    cleanup_sigaction.sa_handler = handler;
+    sigemptyset(&cleanup_sigaction.sa_mask);
+
+    rc = sigaction(SIGINT, &cleanup_sigaction, NULL);
+    if ( rc != 0)
     {
         tlog_error("cannot set SIGINT signal handler");
         goto cleanup;
     }
-    if (signal(SIGTERM, handler) == SIG_ERR)
+    rc = sigaction(SIGTERM, &cleanup_sigaction, NULL);
+    if ( rc != 0)
     {
         tlog_error("cannot set SIGTERM signal handler");
         goto cleanup;
     }
+
+    memset( &hsm_req_sem, 0, sizeof( sem_t ) );
+    rc = sem_init(&hsm_req_sem, 0, max_requests);
+    if ( rc != 0)
+    {
+        tlog_error("cannot call sem_init");
+        goto cleanup;
+    }
+
+    int sem_init_val = 0;
+    sem_getvalue(&hsm_req_sem, &sem_init_val);
+    tlog_info("max_requests setting is %d", sem_init_val);
+    tlog_info("waiting for message from kernel");
 
     while (1) {
         struct hsm_action_list *hal;
@@ -438,6 +522,7 @@ int ct_run(void) {
         tlog_info("waiting for message from kernel");
 
         rc = llapi_hsm_copytool_recv(ctdata, &hal, &msgsize);
+
         if (rc == -ESHUTDOWN) {
             tlog_info("shutting down");
             break;
@@ -472,17 +557,26 @@ int ct_run(void) {
                 err_major++;
                 break;
             }
+
+            ct_request_ctl();
+
             rc = ct_process_item_async(hai, hal->hal_flags);
-            if (rc < 0)
+            if (rc) {
                 tlog_error("'%s' item %d process", ct_opt.o_mnt, i);
+                sem_post(&hsm_req_sem);
+            }
+
             if (ct_opt.o_abort_on_error && err_major)
                 break;
             hai = hai_next(hai);
         }
 
+        if (stop_it) break;
+
         if (ct_opt.o_abort_on_error && err_major)
             break;
     }
+    sem_destroy(&hsm_req_sem);
 
     int rc1;
 cleanup:
@@ -497,3 +591,48 @@ cleanup:
 
     return rc;
 }
+
+int llapi_hsm_action_progress_ex(struct hsm_copyaction_private *hcp,
+                                 const struct hsm_extent *he, __u64 total,
+                                 int hp_flags)
+{
+    const uint max_retry = 5;
+    int retrys = max_retry;
+    int rc;
+msg_resend:
+
+    rc = llapi_hsm_action_progress(hcp, he, total, hp_flags);
+    if (rc) {
+        if (retrys >= 0) {
+            sleep(rand() % max_retry);
+            retrys--;
+            goto msg_resend;
+        }
+    }
+
+    return rc;
+}
+
+int llapi_hsm_action_begin_ex(struct hsm_copyaction_private **phcp,
+              const struct hsm_copytool_private *ct,
+              const struct hsm_action_item *hai,
+              int restore_mdt_index, int restore_open_flags,
+              bool is_error)
+{
+    const uint max_retry = 5;
+    int retrys = max_retry;
+    int rc;
+msg_resend:
+
+    rc = llapi_hsm_action_begin(phcp, ct, hai, restore_mdt_index, restore_open_flags, is_error);
+    if (rc) {
+        if (retrys >= 0) {
+            sleep(rand() % max_retry);
+            retrys--;
+            goto msg_resend;
+        }
+    }
+
+    return rc;
+}
+

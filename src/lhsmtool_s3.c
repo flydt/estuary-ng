@@ -82,11 +82,13 @@
 #include <assert.h>
 #include <openssl/md5.h>
 #include <bsd/string.h> /* To get strlcpy */
+#include <sys/resource.h>
 
 char access_key[S3_MAX_KEY_SIZE];
 char secret_key[S3_MAX_KEY_SIZE];
 char host[S3_MAX_HOSTNAME_SIZE];
 char bucket_name[S3_MAX_BUCKET_NAME_SIZE];
+char path_prefix[PATH_MAX];
 
 S3BucketContext bucketContext = {
     host,
@@ -129,6 +131,22 @@ static int get_s3_object(char *objectName, get_object_callback_data *data,
     }
 
     return 0;
+}
+
+static void ct_opt_setup(struct ct_options *opt_ptr)
+{
+    memset(opt_ptr, 0, sizeof(struct ct_options));
+    opt_ptr->o_verbose = LLAPI_MSG_INFO;
+    opt_ptr->o_report_int = REPORT_INTERVAL_DEFAULT;
+}
+
+static void ct_opt_dump(struct ct_options *opt_ptr)
+{
+    tlog_debug("dump copytool option for config file: %s", opt_ptr->o_config);
+    tlog_debug("copytool abort_on_error: %s", opt_ptr->o_abort_on_error ? "no" : "yes");
+    tlog_debug("copytool debug log: %s", opt_ptr->o_verbose ? "on" : "off");
+    tlog_debug("copytool archive_cnt: %d", opt_ptr->o_archive_cnt);
+    tlog_debug("copytool archive_id: %d", opt_ptr->o_archive_id[opt_ptr->o_archive_cnt]);
 }
 
 static void usage(const char *name, int rc) {
@@ -260,9 +278,18 @@ static int ct_parseopts(int argc, char *const *argv) {
     }
 
     if (config_lookup_string(&cfg, "bucket_name", &config_str)) {
-        strncpy(bucket_name, config_str, sizeof(host));
+        strncpy(bucket_name, config_str, sizeof(bucket_name));
+        tlog_debug("use bucket of %s", bucket_name);
     } else {
         tlog_error("could not find bucket_name");
+        return -EINVAL;
+    }
+
+    if (config_lookup_string(&cfg, "path_prefix", &config_str)) {
+        strncpy(path_prefix, config_str, sizeof(path_prefix));
+        tlog_debug("use path_prefix of %s", path_prefix);
+    } else {
+        tlog_warn("could not find path_prefix");
         return -EINVAL;
     }
 
@@ -278,7 +305,30 @@ static int ct_parseopts(int argc, char *const *argv) {
         return -EINVAL;
     }
 
+    if (config_lookup_int(&cfg, "max_requests", &max_requests)) {
+        if (max_requests > 0)
+            tlog_debug("use max_requests of %d", max_requests);
+        else {
+            tlog_error("invalid max_requests value %d in config file", max_requests);
+            return -EINVAL;
+        }
+    } else {
+        tlog_warn("could not find max_requests in config file, use default value of %u", MAX_HSM_REQUESTS);
+        max_requests = MAX_HSM_REQUESTS;
+    }
+
     return 0;
+}
+
+static void ct_dumpopts(int argc, char *const *argv) {
+    char opts_cmd[PATH_MAX];
+
+    memset(opts_cmd, 0, sizeof(opts_cmd));
+    for (int i = 0; i < argc; i++)
+    {
+        sprintf(opts_cmd, "%s%s ", opts_cmd, argv[i]);
+    }
+    tlog_debug("dump command line\n %s", opts_cmd);
 }
 
 static int fid_parent(const char *mnt, const lustre_fid *fid, char *parent,
@@ -354,8 +404,24 @@ static void ct_mk_put_properties(S3PutProperties *obj_put_properties)
     obj_put_properties->expires = -1;
 }
 
+static char* ct_target(const char *full_path)
+{
+    // example:
+    // full_path        "/mnt/fs001/lx005/license"
+    // path_prefix      "/mnt/fs001/lx005"
+    // action_target    "license"
+    char *action_target = NULL;
+    char *obj_pos = strstr(full_path, path_prefix);
+    if (obj_pos && (obj_pos == full_path))
+    {
+        action_target = obj_pos + strlen(path_prefix) + 1;
+    }
+
+    return action_target;
+}
+
 static int ct_archive_data(struct hsm_copyaction_private *hcp, const char *src,
-                           const char *dst, int src_fd, struct stat *src_st,
+						   const char *object_name, int src_fd, struct stat *src_st,
                            const struct hsm_action_item *hai, long hal_flags) {
     struct hsm_extent he;
     time_t last_report_time;
@@ -383,12 +449,10 @@ static int ct_archive_data(struct hsm_copyaction_private *hcp, const char *src,
 
     he.offset = 0;
     he.length = 0;
-    rc = llapi_hsm_action_progress(hcp, &he, length, 0);
+    rc = llapi_hsm_action_progress_ex(hcp, &he, length, 0);
     if (rc < 0) {
-        /* Action has been canceled or something wrong
-         * is happening. Stop copying data. */
-        tlog_error("progress ioctl for copy '%s'->'%s' failed", src, dst);
-        goto out;
+        // only log warning for failed to send progress report
+        tlog_warn("progress ioctl for copy '%s'->'%s' failed", src, object_name);
     }
 
     dbuf = malloc(src_st->st_size);
@@ -408,7 +472,11 @@ static int ct_archive_data(struct hsm_copyaction_private *hcp, const char *src,
     ssize_t rc_read = read(src_fd, dbuf, length);
     if (rc_read != (ssize_t)length)
     {
-        tlog_error("failed to read data from %s", src);
+        tlog_debug("HSM request file %s with size %u from offset %u",
+                    object_name, src_st->st_size, hai->hai_extent.offset);
+        tlog_error("failed to read data from %s, request size %ld, get size %ld",
+                    object_name, (ssize_t)length, rc_read);
+
         rc = -EIO;
         goto out;
     } else {
@@ -418,12 +486,11 @@ static int ct_archive_data(struct hsm_copyaction_private *hcp, const char *src,
 
     data.buffer = dbuf;
     data.contentLength = length;
+    data.file_name = (char *)object_name;
 
     S3PutObjectHandler putObjectHandler = { putResponseHandler,
                                             &put_objectdata_callback
                                           };
-
-    const char *obj_name = dst;
 
     // Get a local copy of the general bucketContext than overwrite the
     // pointer to the bucket_name
@@ -434,12 +501,26 @@ static int ct_archive_data(struct hsm_copyaction_private *hcp, const char *src,
 
     double before_s3_put = ct_now();
     int retry_count = RETRYCOUNT;
-    do {
-        S3_put_object(&localbucketContext, obj_name, length,
+    while (true)
+    {
+        tlog_debug("begin put '%s' to bucket '%s'", object_name, bucket_name);
+        S3_put_object(&localbucketContext, object_name, length,
                       &putProperties, NULL, 0, &putObjectHandler, &data);
-    } while (S3_status_is_retryable(data.status) &&
-             should_retry(&retry_count));
-    tlog_info("S3 put of '%s' to bucket '%s' took %fs", obj_name, bucket_name, ct_now() - before_s3_put);
+        if (data.status != S3StatusOK)
+        {
+            tlog_debug("failed to put '%s' to bucket '%s' with error code '%d'",
+                        object_name, bucket_name, data.status);
+            if (S3_status_is_retryable(data.status) && should_retry(&retry_count))
+            {
+                continue;
+            } else {
+                break;
+            }
+        } else {
+            tlog_debug("put '%s' to bucket '%s' took %fs", object_name, bucket_name, ct_now() - before_s3_put);
+            break;
+        }
+    }
 
     if (data.status != S3StatusOK) {
         rc = -EIO;
@@ -456,12 +537,32 @@ out:
     return rc;
 }
 
+// get chunk size and chunk count for multipart upload
+static void ct_get_chunksize(size_t s3_obj_size, size_t *s3_chunk_sz, size_t *s3_seq_total)
+{
+    size_t chunk_size = CHUNK_SIZE;
+    size_t total_seq = ((s3_obj_size + chunk_size - 1) / chunk_size);
+    while (total_seq > 10000) {
+        if (chunk_size < CHUNK_SIZE_MAX) {
+            chunk_size *= 2;
+        }
+        if (chunk_size > CHUNK_SIZE_MAX)
+        {
+            chunk_size = CHUNK_SIZE_MAX;
+        }
+
+        total_seq = ((s3_obj_size + chunk_size - 1) / chunk_size);
+    }
+
+    *s3_chunk_sz = chunk_size;
+    *s3_seq_total = total_seq;
+}
+
 static int ct_archive_data_big (struct hsm_copyaction_private *hcp, const char *src,
                                 const char *object_name, int src_fd, struct stat *src_st,
                                 const struct hsm_action_item *hai, long hal_flags) {
     struct hsm_extent he;
     time_t last_report_time;
-    char *dbuf = NULL;
     __u64 file_offset = hai->hai_extent.offset;
     __u64 length = hai->hai_extent.length;
     int rc = 0;
@@ -486,12 +587,10 @@ static int ct_archive_data_big (struct hsm_copyaction_private *hcp, const char *
 
     he.offset = file_offset;
     he.length = 0;
-    rc = llapi_hsm_action_progress(hcp, &he, length, 0);
+    rc = llapi_hsm_action_progress_ex(hcp, &he, length, 0);
     if (rc < 0) {
-        /* Action has been canceled or something wrong
-         * is happening. Stop copying data. */
-        tlog_error("progress ioctl for archive '%s'", object_name);
-        goto out;
+        // only log warning for failed to report progress
+        tlog_warn("progress ioctl for archive '%s'", object_name);
     }
 
     // setup properities for put object
@@ -505,60 +604,56 @@ static int ct_archive_data_big (struct hsm_copyaction_private *hcp, const char *
     size_t	  contentLength	     = src_st->st_size;
     size_t	  totalContentLength = src_st->st_size;
     size_t	  todoContentLength  = src_st->st_size;
+	size_t    s3_chunk_size;
+	size_t    total_seq;
 
     UploadManager manager;
     manager.upload_id = NULL;
     manager.gb	      = NULL;
 
-    // get total chunk count for multipart upload
-    int total_seq = ((src_st->st_size + CHUNK_SIZE - 1) / CHUNK_SIZE);
+    // get multipart upload chunk size and total part number
+    ct_get_chunksize(totalContentLength, &s3_chunk_size, &total_seq);
 
-    manager.etags = (char **)malloc(sizeof(char *) * total_seq);
+    manager.etags = (char **)calloc(total_seq, sizeof(char *));
     manager.next_etags_pos = 0;
 
-    const char *uploadId = 0;
+    rc = -EIO;
     int retry_count = RETRYCOUNT;
     bool is_retryable;
     do {
         S3_initiate_multipart(&bucketContext, object_name, 0, &initMultipartHandler,
                               NULL, TIMEOUT_MS, &manager);
-        S3Status rc = (manager.upload_id == NULL) ? S3StatusErrorInternalError : 0;
-        is_retryable = S3_status_is_retryable(rc);
+        S3Status rc_init = (manager.upload_id == NULL) ? S3StatusErrorInternalError : 0;
+        is_retryable = S3_status_is_retryable(rc_init);
     } while (is_retryable && should_retry(&retry_count));
 
     // TODO: read AWS API DOC, if upload_id always not 0 when where have no error happed
     if (manager.upload_id == NULL) {
-	    tlog_error(
-		    "failed to initiate multipart upload for object '%s' on bucket '%s'",
-		    object_name, bucket_name);
-	    goto clean;
+        tlog_error( "failed to initiate multipart upload for object '%s' on bucket '%s'",
+                    object_name, bucket_name);
+        goto clean;
     }
 
     assert(manager.gb == NULL);
 
     // prepare file handle for multi part upload
     data.file_name = (char *)src;
-    data.fd = open(data.file_name, O_RDONLY | O_LARGEFILE | O_RSYNC);
-    if (data.fd == -1) {
-	    rc = EIO;
-	    tlog_error("ERROR: Failed to open input file %s: ", src);
-	    goto clean;
-    }
+    data.fd = src_fd;
 
     // multi part upload start
     int partContentLength = 0;
     MultipartPartData part_data;
     memset(&part_data, 0, sizeof(MultipartPartData));
 
-    todoContentLength -= CHUNK_SIZE * manager.next_etags_pos;
+    todoContentLength -= s3_chunk_size * manager.next_etags_pos;
+    part_data.manager = &manager;
     for (int seq = manager.next_etags_pos + 1; seq <= total_seq; seq++) {
-        part_data.manager = &manager;
         part_data.seq = seq;
         if (part_data.put_object_data.gb == NULL) {
             part_data.put_object_data = data;
         }
-        partContentLength = ((contentLength > CHUNK_SIZE) ? CHUNK_SIZE : contentLength);
-        tlog_info("%s Part Seq %d, length=%d start", src, seq, partContentLength);
+        partContentLength = ((contentLength > s3_chunk_size) ? s3_chunk_size : contentLength);
+        tlog_info("%s Part Seq %d, length=%d start", object_name, seq, partContentLength);
         part_data.put_object_data.contentLength = partContentLength;
         part_data.put_object_data.originalContentLength = partContentLength;
         part_data.put_object_data.totalContentLength = todoContentLength;
@@ -567,10 +662,56 @@ static int ct_archive_data_big (struct hsm_copyaction_private *hcp, const char *
         int retry_count	= RETRYCOUNT;
 
         do {
+            time_t t_begin, t_end;
+            double t_cost;
+
+            t_begin = time(NULL);
+            // retry must reset file pointer position, because it may have beeen changed
+            // in callback function when prepare data for upload
+            lseek(data.fd, (seq - 1) * s3_chunk_size, SEEK_SET);
+            part_data.put_object_data.status = 0;
+
             S3_upload_part(&bucketContext, object_name, &putProperties,
                            &uploadMultipartHandler, seq,
                            manager.upload_id, partContentLength, NULL,
                            TIMEOUT_MS, &part_data);
+
+            t_end = time(NULL);
+
+            // when chunk upload success, next_etags_pos will be updated
+            // mark status as S3StatusErrorRequestTimeout for retry
+            if (manager.next_etags_pos != seq)
+            {
+                tlog_error("failed to put Part Seq of %d, for object '%s' with rc '%d'",
+                            seq, object_name, part_data.put_object_data.status);
+                part_data.put_object_data.status = S3StatusErrorRequestTimeout;
+            } else {
+                // check slow operation
+                t_cost = difftime(t_end, t_begin);
+                if (t_cost > SLOW_IO_TIME) {
+                    tlog_warn("slow put Part Seq of %d, for object '%s' with time '%f' seconds",
+                                seq, object_name, t_cost);
+                }
+
+                // report progress to HSM coordinator
+                if (difftime(t_end, last_report_time) >= ct_opt.o_report_int) {
+                    he.offset = (seq - 1) * s3_chunk_size;
+                    he.length = partContentLength;
+                    tlog_debug("report for archive '%s' progress with offset '%lu' len='%lu'",
+                                object_name, he.offset, he.length);
+                    int rc_report = llapi_hsm_action_progress_ex(hcp, &he, length, 0);
+                    if (rc_report < 0) {
+                        // not treat progress report message failed to send as
+                        // failure continue process next file part, only log
+                        // warning message
+                        tlog_warn("progress ioctl for archive '%s' failed with rc=%d",
+                                    object_name, rc_report);
+                    } else {
+                        // update progress
+                        last_report_time = time(NULL);
+                    }
+                }
+            }
         } while (S3_status_is_retryable(part_data.put_object_data.status) &&
                  should_retry(&retry_count));
 
@@ -579,8 +720,10 @@ static int ct_archive_data_big (struct hsm_copyaction_private *hcp, const char *
             goto clean;
         }
 
-        contentLength -= CHUNK_SIZE;
-        todoContentLength -= CHUNK_SIZE;
+		tlog_info("%s Part Seq %d, length=%d finish with code %d",
+				object_name, seq, partContentLength, part_data.put_object_data.status);
+		contentLength -= partContentLength;
+		todoContentLength -= partContentLength;
         assert(manager.gb == NULL);
     }
 
@@ -617,20 +760,7 @@ static int ct_archive_data_big (struct hsm_copyaction_private *hcp, const char *
                    manager.upload_id, object_name);
         goto clean;
     }
-
-    now = time(NULL);
-    if (now >= last_report_time + ct_opt.o_report_int) {
-        tlog_info("sending progress report for archiving %s", src);
-        he.offset = file_offset;
-        he.length = length;
-        rc = llapi_hsm_action_progress(hcp, &he, length, 0);
-        if (rc < 0) {
-            /* Action has been canceled or something wrong
-             * is happening. Stop copying data. */
-            tlog_error("progress ioctl for copy '%s'->'%s' failed", src, object_name);
-            goto out;
-        }
-    }
+	rc = 0;
 
 clean:
     if (manager.upload_id) {
@@ -645,9 +775,6 @@ clean:
     free(manager.etags);
 
 out:
-    if (dbuf != NULL)
-        free(dbuf);
-
     if (!rc) {
         tlog_info("copied %ju bytes in %f seconds", src_st->st_size, ct_now() - start_ct_now);
     } else {
@@ -659,7 +786,7 @@ out:
 
 static int ct_restore_data(struct hsm_copyaction_private *hcp, const char *src,
                            const char *dst, int dst_fd,
-                           const struct hsm_action_item *hai, long hal_flags, char *file_name) {
+                           const struct hsm_action_item *hai, long hal_flags, char *file_path) {
     double start_ct_now = ct_now();
     struct hsm_extent he;
     __u64 file_offset = hai->hai_extent.offset;
@@ -685,29 +812,34 @@ static int ct_restore_data(struct hsm_copyaction_private *hcp, const char *src,
 
     he.offset = file_offset;
     he.length = 0;
-    rc = llapi_hsm_action_progress(hcp, &he, length, 0);
+    rc = llapi_hsm_action_progress_ex(hcp, &he, length, 0);
     if (rc < 0) {
-        /* Action has been canceled or something wrong
-         * is happening. Stop copying data. */
-        tlog_error("progress ioctl for copy '%s'->'%s' failed", src, dst);
-        goto out;
+        // only log warning for progress message
+        tlog_warn("progress ioctl for copy '%s'->'%s' failed", src, dst);
     }
 
     last_report_time = time(NULL);
 
     // Downloading from the object store
-    char *object_name = file_name;
+    char full_path[PATH_MAX];
+    sprintf(full_path, "%s/%s", ct_opt.o_mnt, file_path);
+    char *object_name = ct_target(full_path);
+    if (object_name == NULL)
+    {
+        tlog_warn("archive file path '%s' not match with config path_prefix '%s'", full_path, path_prefix);
+        rc = 0;
+        goto out;
+    }
 
     S3GetObjectHandler getObjectHandler = { getResponseHandler,
                                             &get_objectdata_callback };
 
     if (length == -1) {
         if (file_offset == 0) {
-            // Download data and metadata from the first chunk
             get_object_callback_data data;
             memset(&data, 0, sizeof(data));
             data.fd = dst_fd;
-            data.file_name = file_name;
+            data.file_path = file_path;
             rc = get_s3_object(object_name, &data, &getObjectHandler);
             if (rc < 0) {
                 goto out;
@@ -727,12 +859,10 @@ static int ct_restore_data(struct hsm_copyaction_private *hcp, const char *src,
         tlog_info("sending progress report for archiving %s", src);
         he.offset = file_offset;
         he.length = length;
-        rc = llapi_hsm_action_progress(hcp, &he, length, 0);
+        rc = llapi_hsm_action_progress_ex(hcp, &he, length, 0);
         if (rc < 0) {
-            /* Action has been canceled or something wrong
-             * is happening. Stop copying data. */
-            tlog_error("progress ioctl for copy '%s'->'%s' failed", src, dst);
-            goto out;
+            // only log warning
+            tlog_warn("failed to report progress for copy '%s'->'%s'", src, dst);
         }
     }
 
@@ -742,7 +872,27 @@ out:
     return rc;
 }
 
-int ct_archive(const struct hsm_action_item *hai, const long hal_flags, char *file_name) {
+static bool lfs_hsm_archived(char *file_path)
+{
+    struct hsm_user_state hus;
+
+    int rc = llapi_hsm_state_get(file_path, &hus);
+    if (rc) {
+        tlog_error("'get HSM state for '%s' failed: %s'", file_path, strerror(-rc));
+    } else {
+        if ( (hus.hus_states & HS_ARCHIVED) && !(hus.hus_states & HS_DIRTY) )
+        {
+            tlog_info("'HSM state for '%s' is archived'", file_path);
+            return true;
+        } else {
+            tlog_info("'HSM state for '%s' is not archived'", file_path);
+        }
+    }
+
+    return false;
+}
+
+int ct_archive(const struct hsm_action_item *hai, const long hal_flags, char *file_path) {
     struct hsm_copyaction_private *hcp = NULL;
     char src[PATH_MAX];
     int rc;
@@ -791,20 +941,29 @@ int ct_archive(const struct hsm_action_item *hai, const long hal_flags, char *fi
     }
     else
     {
+        char full_path[PATH_MAX];
+        sprintf(full_path, "%s/%s", ct_opt.o_mnt, file_path);
+        char *obj_name = ct_target(full_path);
+        if (obj_name == NULL) {
+            tlog_warn("archive file path '%s' not match with config path_prefix '%s'", full_path, path_prefix);
+            rc = 0;
+            goto end_ct_archive;
+        }
+
         if (src_st.st_size >= MAX_OBJ_SIZE_LEVEL)
         {
-            rc = ct_archive_data_big(hcp, src, file_name, src_fd, &src_st, hai, hal_flags);
+			rc = ct_archive_data_big(hcp, src, obj_name, src_fd, &src_st, hai, hal_flags);
         }
         else
         {
-            rc = ct_archive_data(hcp, src, file_name, src_fd, &src_st, hai, hal_flags);
+			rc = ct_archive_data(hcp, src, obj_name, src_fd, &src_st, hai, hal_flags);
         }
     }
 
 end_ct_archive:
     err_major++;
 
-    if (ct_is_retryable(rc))
+    if (rc && ct_is_retryable(rc))
         hp_flags |= HP_FLAG_RETRY;
 
     rcf = rc;
@@ -816,12 +975,26 @@ end_ct_archive:
     // may be ct_action_done can pass rcf value to rc, but cannot 100% sure from code
     // or can say it cannot (perhaps it because I cannot 100% understand code)
     // lustre/utils/liblustreapi_hsm.c
-    rc |= ct_action_done(&hcp, hai, hp_flags, rcf);
+    int rc_done = ct_action_done(&hcp, hai, hp_flags, rcf);
+    if (!rc && rc_done)
+    {
+        // succes archived file
+        // but, failed to call llapi_hsm_action_end
+        // but, message may success report to HSM coordinator
+        // need check file attribute further
+        char full_path[PATH_MAX];
+        sprintf(full_path, "%s/%s", ct_opt.o_mnt, file_path);
+        if ( lfs_hsm_archived( full_path ) ) {
+            rc_done = 0;
+        }
+    }
+
+    rc |= rc_done;
 
     return rc;
 }
 
-int ct_restore(const struct hsm_action_item *hai, const long hal_flags, char *path) {
+int ct_restore(const struct hsm_action_item *hai, const long hal_flags, char *file_path) {
     struct hsm_copyaction_private *hcp = NULL;
     struct lu_fid dfid;
     char src[PATH_MAX];
@@ -872,9 +1045,9 @@ int ct_restore(const struct hsm_action_item *hai, const long hal_flags, char *pa
         goto end_ct_restore;
     }
 
-    rc = ct_restore_data(hcp, src, dst, dst_fd, hai, hal_flags, path);
+    rc = ct_restore_data(hcp, src, dst, dst_fd, hai, hal_flags, file_path);
     if (rc < 0) {
-        tlog_error("cannot restore '%s'", path);
+        tlog_error("cannot restore '%s'", file_path);
         err_major++;
         if (ct_is_retryable(rc))
             hp_flags |= HP_FLAG_RETRY;
@@ -882,23 +1055,23 @@ int ct_restore(const struct hsm_action_item *hai, const long hal_flags, char *pa
     }
 
 end_ct_restore:
-    rc |= ct_action_done(&hcp, hai, hp_flags, rc);
-
     /* object swaping is done by cdt at copy end, so close of volatile file
      * cannot be done before */
 
     if (!(dst_fd < 0))
         close(dst_fd);
 
+	rc |= ct_action_done(&hcp, hai, hp_flags, rc);
+
     return rc;
 }
 
-int ct_remove(const struct hsm_action_item *hai, const long hal_flags, char *file_name) {
+int ct_remove(const struct hsm_action_item *hai, const long hal_flags, char *file_path) {
     struct hsm_copyaction_private *hcp = NULL;
     char dst[PATH_MAX];
     int rc;
     int retry_count;
-    char *object_name = file_name;
+    char *object_name = file_path;
 
     rc = ct_begin(&hcp, hai);
     if (rc < 0)
@@ -948,6 +1121,7 @@ int ct_cancel(const struct hsm_action_item *hai, const long hal_flags) {
 static int ct_s3_cleanup(void) {
     int rc = 0;
 
+    tlog_info("copytool cleanup on file system '%s'", ct_opt.o_mnt);
     rc = ct_cleanup();
     if (rc == 0) {
         S3_deinitialize();
@@ -958,10 +1132,15 @@ static int ct_s3_cleanup(void) {
 
 int main(int argc, char **argv) {
     int rc;
-    const int log_size_max = 1024 * 1024 * 10;
+    const int log_size_max = 1024 * 1024 * 50;
     const int log_max = 10;
 
-    // initialize log parameters
+    // initialize log parameters with multi process write mode
+    // because found following message in log:
+    // [Auto enable multi-process write mode, log may be lost,
+    // please enable multi-process write mode manually]
+    unsigned int tlog_flag = 0;
+    tlog_flag |= TLOG_MULTI_WRITE;
     rc = tlog_init("/var/log/hsm_s3copytool.log", log_size_max, log_max, 0, 0);
     if (rc) return rc;
 
@@ -984,7 +1163,8 @@ int main(int argc, char **argv) {
     if (rc < 0)
         goto error_cleanup;
 
-    rc = S3_initialize(NULL, S3_INIT_ALL, host);
+    // set userAgentInfo with "estuary_s3copytool"
+    rc = S3_initialize("estuary_s3copytool", S3_INIT_ALL, host);
     if (rc != 0) {
         tlog_error("Error in S3 init");
         goto error_cleanup;
