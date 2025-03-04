@@ -36,6 +36,10 @@ typedef struct get_object_callback_data {
     size_t file_offset;
 } get_object_callback_data;
 
+typedef struct del_object_callback_data {
+    S3Status status;
+} del_object_callback_data;
+
 int put_objectdata_callback(int bufferSize, char *buffer, void *callbackData);
 
 S3Status get_objectdata_callback(int bufferSize, const char *buffer,
@@ -47,8 +51,16 @@ S3Status s3_response_properties_callback(const S3ResponseProperties *properties,
 S3Status s3_response_get_object_properties_callback(const S3ResponseProperties *properties,
                                                     void *callbackData);
 
-void s3_response_complete_callback(S3Status status, const S3ErrorDetails *error,
-                                   void *callbackData);
+void s3_del_response_complete_callback(S3Status status, const S3ErrorDetails *error,
+                                    void *callbackData);
+
+void s3_get_response_complete_callback(S3Status status,
+                                       const S3ErrorDetails *error,
+                                       void *callbackData);
+
+void s3_put_response_complete_callback(S3Status status,
+                                       const S3ErrorDetails *error,
+                                       void *callbackData);
 
 S3Status initial_multipart_response_callback(const char * upload_id,
                                              void * callbackData);
@@ -58,7 +70,16 @@ S3Status multipart_put_part_response_properies_callback(const S3ResponseProperti
 
 int multipart_commit_response_callback(int bufferSize, char *buffer, void *callbackData);
 
-void multipart_response_complete_callback(S3Status status, const S3ErrorDetails *error,
+void multipart_init_response_complete_callback(S3Status status,
+                                          const S3ErrorDetails *error,
                                           void *callbackData);
+
+void multipart_put_response_complete_callback(S3Status status,
+                                          const S3ErrorDetails *error,
+                                          void *callbackData);
+
+void multipart_commit_response_complete_callback(S3Status status,
+                                          const S3ErrorDetails *error,
+                                           void *callbackData);
 
 int multipart_put_objectdata_callback(int bufferSize, char *buffer, void *callbackData);

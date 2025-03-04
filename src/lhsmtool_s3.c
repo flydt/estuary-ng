@@ -1083,7 +1083,7 @@ int ct_remove(const struct hsm_action_item *hai, const long hal_flags, char *fil
     }
 
     retry_count = RETRYCOUNT;
-    get_object_callback_data delete_data;
+    del_object_callback_data delete_data;
 
     // Get a local copy of the general bucketContext than overwrite the
     // pointer to the bucket_name

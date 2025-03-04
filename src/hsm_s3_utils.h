@@ -33,19 +33,15 @@ typedef struct MultipartPartData {
 
 static S3ResponseHandler getResponseHandler = {
                          &s3_response_get_object_properties_callback,
-                         &s3_response_complete_callback };
+                         &s3_get_response_complete_callback };
 
 static S3ResponseHandler putResponseHandler = {
                          &s3_response_properties_callback,
-                         &s3_response_complete_callback };
-
-static S3ResponseHandler headResponseHandler = {
-                         &s3_response_properties_callback,
-                         &s3_response_complete_callback };
+                         &s3_put_response_complete_callback };
 
 static S3ResponseHandler deleteResponseHandler = {
                          &s3_response_properties_callback,
-                         &s3_response_complete_callback };
+                         &s3_del_response_complete_callback };
 
 static S3MultipartInitialHandler initMultipartHandler = {
     {
@@ -53,7 +49,7 @@ static S3MultipartInitialHandler initMultipartHandler = {
         &s3_response_properties_callback,
 
         // always called regardless multipart upload initialize success or not
-        &multipart_response_complete_callback
+        &multipart_init_response_complete_callback
     },
 
     // after initialize of a multipart upload operation, it will be called,
@@ -70,7 +66,7 @@ static S3PutObjectHandler uploadMultipartHandler = {
         &multipart_put_part_response_properies_callback,
 
         // always called regardless part of object put success or not
-        &multipart_response_complete_callback
+        &multipart_put_response_complete_callback
     },
     // S3_upload_part --> request_perform --> easy_transfer --> curl_multi_perform
     // --> multi_runsingle --> Curl_readwrite --> readwrite_upload --> Curl_fillreadbuffer
@@ -89,8 +85,8 @@ static S3MultipartCommitHandler commitMultipartHandler = {
         // s3_response_properties_callback
         &s3_response_properties_callback,
         // S3_complete_multipart_upload --> request_perform --> request_finish -->
-        // commitMultipartCompleteCallback --> multipart_response_complete_callback
-        &multipart_response_complete_callback
+        // commitMultipartCompleteCallback --> multipart_commit_response_complete_callback
+        &multipart_commit_response_complete_callback
     },
     // S3_complete_multipart_upload --> request_perform --> curl_easy_perform --> easy_perform
     // -->easy_transfer --> curl_multi_perform --> multi_runsingle --> readwrite_data

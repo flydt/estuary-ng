@@ -31,10 +31,25 @@ int put_objectdata_callback(int bufferSize, char *buffer,
     return size;
 }
 
-void s3_response_complete_callback(S3Status status,
-                                   const S3ErrorDetails *error,
+void s3_get_response_complete_callback(S3Status status, const S3ErrorDetails *error,
                                    void *callbackData) {
     get_object_callback_data *data = (get_object_callback_data *)callbackData;
+    data->status = status;
+    return;
+}
+
+void s3_del_response_complete_callback(S3Status status,
+                                       const S3ErrorDetails *error,
+                                       void *callbackData) {
+    del_object_callback_data *data = (del_object_callback_data *)callbackData;
+    data->status = status;
+    return;
+}
+
+void s3_put_response_complete_callback(S3Status status,
+                                       const S3ErrorDetails *error,
+                                       void *callbackData) {
+    put_object_callback_data *data = (put_object_callback_data *)callbackData;
     data->status = status;
     return;
 }
@@ -167,7 +182,7 @@ int multipart_commit_response_callback(int bufferSize, char *buffer, void *callb
 }
 
 // response complete callback ------------------------------------------------
-void multipart_response_complete_callback(S3Status status,
+void multipart_init_response_complete_callback(S3Status status,
                                      const S3ErrorDetails *error,
                                      void *callbackData)
 {
@@ -186,6 +201,57 @@ void multipart_response_complete_callback(S3Status status,
         tlog_error("Extra Details:");
         for (int i = 0; i < error->extraDetailsCount; i++) {
             tlog_error("%s: %s", error->extraDetails[i].name, error->extraDetails[i].value);
+        }
+    }
+}
+
+void multipart_put_response_complete_callback(S3Status status,
+                                          const S3ErrorDetails *error,
+                                          void *callbackData) {
+    MultipartPartData *part_data = (MultipartPartData *)callbackData;
+    part_data->put_object_data.status = status;
+
+    if (error && error->message) {
+        tlog_error("Message: %s", error->message);
+    }
+    if (error && error->resource) {
+        tlog_error("Resource: %s", error->resource);
+    }
+    if (error && error->furtherDetails) {
+        tlog_error("Further Details: %s", error->furtherDetails);
+    }
+    if (error && error->extraDetailsCount) {
+        tlog_error("Extra Details:");
+        for (int i = 0; i < error->extraDetailsCount; i++) {
+            tlog_error("%s: %s", error->extraDetails[i].name,
+                       error->extraDetails[i].value);
+        }
+    }
+}
+
+void multipart_commit_response_complete_callback(S3Status status,
+                                                 const S3ErrorDetails *error,
+                                                 void *callbackData) {
+    UploadManager *manager = (UploadManager *)callbackData;
+    if (status != S3StatusOK)
+    {
+        tlog_error("Failed to commit multipart object: %s with rc: %d", manager->upload_id, status);
+    }
+
+    if (error && error->message) {
+        tlog_error("Message: %s", error->message);
+    }
+    if (error && error->resource) {
+        tlog_error("Resource: %s", error->resource);
+    }
+    if (error && error->furtherDetails) {
+        tlog_error("Further Details: %s", error->furtherDetails);
+    }
+    if (error && error->extraDetailsCount) {
+        tlog_error("Extra Details:");
+        for (int i = 0; i < error->extraDetailsCount; i++) {
+            tlog_error("%s: %s", error->extraDetails[i].name,
+                       error->extraDetails[i].value);
         }
     }
 }
