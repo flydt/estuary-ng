@@ -99,6 +99,9 @@ S3BucketContext bucketContext = {
     secret_key
 };
 
+#define RANGE_GET_ENABLED 1
+
+#ifndef RANGE_GET_ENABLED
 static int get_s3_object(char *objectName, get_object_callback_data *data,
                          S3GetObjectHandler *getObjectHandler) {
 
@@ -132,6 +135,58 @@ static int get_s3_object(char *objectName, get_object_callback_data *data,
 
     return 0;
 }
+#else
+static int get_s3_object(char *objectName, get_object_callback_data *data,
+                         S3GetObjectHandler *getObjectHandler) {
+
+    assert(objectName && data && getObjectHandler);
+
+    // Get a local copy of the general bucketContext than overwrite the
+    // pointer to the bucket_name
+    S3BucketContext localbucketContext;
+    memcpy(&localbucketContext, &bucketContext, sizeof(S3BucketContext));
+    localbucketContext.bucketName = bucket_name;
+
+    double before_s3_get = ct_now();
+    int retry_count = RETRYCOUNT;
+    uint64_t startByte = 0, byteCount = CHUNK_SIZE;
+
+    do {
+        lseek(data->fd, startByte, SEEK_SET);
+        S3_get_object(&localbucketContext, objectName, NULL, startByte, byteCount, NULL, 0,
+                      getObjectHandler, data);
+        if (data->status == S3StatusOK) {
+            data->totalLength += data->contentLength;
+            if (byteCount != data->contentLength) {
+                tlog_debug("process file %s complete", data->file_path);
+                break;
+            } else {
+                startByte += byteCount;
+            }
+        } else if (data->status == S3StatusErrorInvalidRange) {
+            // startByte out of object size
+            tlog_debug("process file %s complete", data->file_path);
+            data->status = S3StatusOK;
+            break;
+        } else {
+            if (S3_status_is_retryable(data->status) && should_retry(&retry_count)) {
+                continue;
+            } else {
+                break;
+            }
+        }
+    } while (true);
+
+    tlog_info("S3 get of %s took %fs", objectName, ct_now() - before_s3_get);
+
+    if (data->status != S3StatusOK) {
+        tlog_error("S3Error %s", S3_get_status_name(data->status));
+        return -EIO;
+    }
+
+    return 0;
+}
+#endif
 
 static void ct_opt_setup(struct ct_options *opt_ptr)
 {
