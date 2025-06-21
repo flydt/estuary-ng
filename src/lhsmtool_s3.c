@@ -200,12 +200,11 @@ static int ct_parseopts(int argc, char *const *argv) {
            -1) {
         switch (c) {
         case 'A':
-            if ((ct_opt.o_archive_cnt >= LL_HSM_ORIGIN_MAX_ARCHIVE) ||
-                (atoi(optarg) >= LL_HSM_ORIGIN_MAX_ARCHIVE)) {
-                rc = -E2BIG;
-                tlog_error("archive number must be less than %zu",
-                           LL_HSM_ORIGIN_MAX_ARCHIVE);
-                return rc;
+            if (atol(optarg) <= 0 || atol(optarg) > INT_MAX)
+            {
+                 rc = -E2BIG;
+                 tlog_error("archive number must be lies between 1 to %d", INT_MAX);
+                 return rc;
             }
             ct_opt.o_archive_id[ct_opt.o_archive_cnt] = atoi(optarg);
             ct_opt.o_archive_cnt++;
