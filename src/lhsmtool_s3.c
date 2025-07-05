@@ -54,12 +54,6 @@
 #define _GNU_SOURCE
 #endif
 
-#include "lhsmtool_s3.h"
-#include "ct_common.h"
-#include "tlog.h"
-#include "growbuffer.h"
-#include "hsm_s3_utils.h"
-
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -83,6 +77,14 @@
 #include <openssl/md5.h>
 #include <bsd/string.h> /* To get strlcpy */
 #include <sys/resource.h>
+#include <limits.h>
+
+#include "lhsmtool_s3.h"
+#include "ct_common.h"
+#include "tlog.h"
+#include "growbuffer.h"
+#include "hsm_s3_utils.h"
+#include "mem_quota.h"
 
 char access_key[S3_MAX_KEY_SIZE];
 char secret_key[S3_MAX_KEY_SIZE];
@@ -509,7 +511,11 @@ static int ct_archive_data(struct hsm_copyaction_private *hcp, const char *src,
         tlog_warn("progress ioctl for copy '%s'->'%s' failed", src, object_name);
     }
 
+    #ifdef CT_MEM_QUOTA_ENABLED
+    dbuf = quota_mem_alloc(src_st->st_size);
+    #else
     dbuf = malloc(src_st->st_size);
+    #endif
     if (dbuf == NULL) {
         rc = -ENOMEM;
         goto out;
@@ -585,7 +591,12 @@ static int ct_archive_data(struct hsm_copyaction_private *hcp, const char *src,
     rc = 0;
 out:
     if (dbuf != NULL)
+    #ifdef CT_MEM_QUOTA_ENABLED
+        quota_mem_free(dbuf, src_st->st_size);
+    #else
         free(dbuf);
+    #endif
+
     tlog_info("copied %ju bytes in %f seconds", length, ct_now() - start_ct_now);
 
     return rc;
@@ -654,12 +665,12 @@ static int ct_archive_data_big (struct hsm_copyaction_private *hcp, const char *
     put_object_callback_data data;
     memset(&data, 0, sizeof(put_object_callback_data));
 
-    double	  before_lustre_read = ct_now();
-    size_t	  contentLength	     = src_st->st_size;
-    size_t	  totalContentLength = src_st->st_size;
-    size_t	  todoContentLength  = src_st->st_size;
-	size_t    s3_chunk_size;
-	size_t    total_seq;
+    double    before_lustre_read = ct_now();
+    size_t    contentLength	     = src_st->st_size;
+    size_t    totalContentLength = src_st->st_size;
+    size_t    todoContentLength  = src_st->st_size;
+    size_t    s3_chunk_size;
+    size_t    total_seq;
 
     UploadManager manager;
     manager.upload_id = NULL;
@@ -1224,6 +1235,10 @@ int main(int argc, char **argv) {
         goto error_cleanup;
     }
 
+    #ifdef CT_MEM_QUOTA_ENABLED
+    quota_mem_init(CT_MEM_QUOTA_SIZE);
+    #endif
+
     rc = ct_run();
 
 error_cleanup:
@@ -1231,6 +1246,10 @@ error_cleanup:
 
 error_exit:
     tlog_exit();
+
+    #ifdef CT_MEM_QUOTA_ENABLED
+    quota_mem_destroy();
+    #endif
 
     return -rc;
 }

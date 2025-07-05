@@ -8,6 +8,7 @@ add_library(estuary_copytool OBJECT ct_common.c)
 add_library(estuary_copytool_log OBJECT tlog.c)
 add_library(estuary_copytool_growbuffer OBJECT growbuffer.c)
 add_library(estuary_copytool_callback OBJECT s3_callback.c)
+add_library(estuary_copytool_mem_quota OBJECT mem_quota.c)
 
 target_link_libraries(estuary_copytool PUBLIC 
     pthread 
@@ -25,4 +26,4 @@ target_include_directories(estuary_copytool_callback PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../build/_deps/libs3-src/inc>
 )
 
-target_link_libraries(estuary_s3copytool PRIVATE estuary_copytool estuary_copytool_log estuary_copytool_growbuffer estuary_copytool_callback libs3::s3)
+target_link_libraries(estuary_s3copytool PRIVATE estuary_copytool estuary_copytool_log estuary_copytool_growbuffer estuary_copytool_callback estuary_copytool_mem_quota libs3::s3)
