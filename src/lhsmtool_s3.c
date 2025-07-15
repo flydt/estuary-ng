@@ -937,26 +937,6 @@ out:
     return rc;
 }
 
-static bool lfs_hsm_archived(char *file_path)
-{
-    struct hsm_user_state hus;
-
-    int rc = llapi_hsm_state_get(file_path, &hus);
-    if (rc) {
-        tlog_error("'get HSM state for '%s' failed: %s'", file_path, strerror(-rc));
-    } else {
-        if ( (hus.hus_states & HS_ARCHIVED) && !(hus.hus_states & HS_DIRTY) )
-        {
-            tlog_info("'HSM state for '%s' is archived'", file_path);
-            return true;
-        } else {
-            tlog_info("'HSM state for '%s' is not archived'", file_path);
-        }
-    }
-
-    return false;
-}
-
 int ct_archive(const struct hsm_action_item *hai, const long hal_flags, char *file_path) {
     struct hsm_copyaction_private *hcp = NULL;
     char src[PATH_MAX];
@@ -1017,11 +997,11 @@ int ct_archive(const struct hsm_action_item *hai, const long hal_flags, char *fi
 
         if (src_st.st_size >= MAX_OBJ_SIZE_LEVEL)
         {
-			rc = ct_archive_data_big(hcp, src, obj_name, src_fd, &src_st, hai, hal_flags);
+	    rc = ct_archive_data_big(hcp, src, obj_name, src_fd, &src_st, hai, hal_flags);
         }
         else
         {
-			rc = ct_archive_data(hcp, src, obj_name, src_fd, &src_st, hai, hal_flags);
+	    rc = ct_archive_data(hcp, src, obj_name, src_fd, &src_st, hai, hal_flags);
         }
     }
 
@@ -1041,18 +1021,6 @@ end_ct_archive:
     // or can say it cannot (perhaps it because I cannot 100% understand code)
     // lustre/utils/liblustreapi_hsm.c
     int rc_done = ct_action_done(&hcp, hai, hp_flags, rcf);
-    if (!rc && rc_done)
-    {
-        // succes archived file
-        // but, failed to call llapi_hsm_action_end
-        // but, message may success report to HSM coordinator
-        // need check file attribute further
-        char full_path[PATH_MAX];
-        sprintf(full_path, "%s/%s", ct_opt.o_mnt, file_path);
-        if ( lfs_hsm_archived( full_path ) ) {
-            rc_done = 0;
-        }
-    }
 
     rc |= rc_done;
 
